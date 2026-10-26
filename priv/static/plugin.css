@@ -1,0 +1,134 @@
+/* riak_core plugin pages. Class names are prefixed rcp-; colours come from
+   beamdash's CSS variables, so the pages follow its light and dark themes. */
+
+.rcp-page { color: var(--fg); }
+.rcp-header { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+.rcp-header h2 { margin: 0 0 0.5rem; }
+.rcp-page h3 { margin: 1.25rem 0 0.5rem; }
+.rcp-muted, .rcp-note { color: var(--muted); }
+.rcp-error { color: var(--error); }
+.rcp-ok { color: var(--ok); }
+.rcp-bad { color: var(--error); }
+.rcp-pending { color: var(--accent); font-weight: 600; }
+.rcp-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.rcp-cards { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 0.5rem 0; }
+.rcp-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  min-width: 10rem;
+  background: var(--bg);
+}
+.rcp-card-label { color: var(--muted); font-size: 0.8rem; }
+.rcp-card-value { font-size: 1.1rem; font-weight: 600; overflow-wrap: anywhere; }
+
+.rcp-filter { margin: 0.25rem 0 0.5rem; display: inline-flex; }
+.rcp-filter label { display: inline-flex; gap: 0.5rem; align-items: center; color: var(--muted); }
+.rcp-filter select {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.1rem 0.3rem;
+}
+
+.rcp-table { border-collapse: collapse; width: 100%; }
+.rcp-table th, .rcp-table td {
+  text-align: left;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.rcp-table th { color: var(--muted); font-weight: 600; }
+.rcp-table tbody tr:nth-child(even) { background: var(--row-alt); }
+.rcp-table .rcp-num { text-align: right; font-variant-numeric: tabular-nums; }
+.rcp-table td.rcp-mono { overflow-wrap: anywhere; }
+.rcp-sortable { cursor: pointer; user-select: none; }
+.rcp-sortable:hover { color: var(--accent); }
+
+.rcp-status-valid { color: var(--ok); }
+.rcp-status-joining, .rcp-status-leaving, .rcp-status-exiting { color: var(--accent); }
+.rcp-status-down { color: var(--error); }
+
+/* Admin page */
+.rcp-actions { white-space: nowrap; }
+.rcp-actions button { margin-right: 0.25rem; padding: 2px 10px; font-size: 12px; }
+.rcp-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin: 0.25rem 0 0.5rem; }
+.rcp-form input, .rcp-form select {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+}
+.rcp-form input[type="text"] { min-width: 16rem; }
+button.rcp-danger { background: transparent; color: var(--error); border-color: var(--error); }
+button.rcp-danger-solid { background: var(--error); color: #fff; border-color: var(--error); }
+.rcp-page button:disabled { opacity: 0.45; cursor: not-allowed; }
+.rcp-confirm {
+  display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+}
+.rcp-note-line { margin: 0.25rem 0; }
+.rcp-transition h4 { margin: 0.75rem 0 0.25rem; font-weight: 600; }
+
+/* a node name that switches beamdash to that node */
+.rcp-page a.rcp-node { color: var(--accent); text-decoration: none; }
+.rcp-page a.rcp-node:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* a pid that opens the process on beamdash's Processes tab */
+.rcp-page a.rcp-pid { color: var(--accent); text-decoration: none; }
+.rcp-page a.rcp-pid:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* Ring page: Table / Ring views */
+.rcp-tabs { display: flex; gap: 0; margin: 1rem 0 0.5rem; border-bottom: 1px solid var(--line); }
+.rcp-page button.rcp-tab {
+  background: none; color: var(--muted); border: 0; border-bottom: 2px solid transparent;
+  border-radius: 0; padding: 0.35rem 0.9rem; font: inherit; cursor: pointer; margin-bottom: -1px;
+}
+.rcp-page button.rcp-tab:hover { color: var(--fg); }
+.rcp-page button.rcp-tab.active { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+
+.rcp-ring { display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: center; margin-top: 0.75rem; }
+.rcp-ring-box { max-width: 100%; max-height: 80vh; overflow: auto; flex: 0 1 auto; }
+.rcp-ring-svg { display: block; height: auto; max-width: none; }
+.rcp-zoom { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.75rem; }
+.rcp-page button.rcp-zoom-btn {
+  min-width: 2rem; padding: 0.15rem 0.5rem; font: inherit; line-height: 1.4; cursor: pointer;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px;
+}
+.rcp-page button.rcp-zoom-btn:hover:not(:disabled) { border-color: var(--accent); }
+.rcp-zoom-level { min-width: 3rem; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rcp-ring-seg { stroke: var(--bg); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.rcp-ring-seg:hover, .rcp-ring-band:hover { opacity: 0.8; }
+.rcp-ring-band { stroke: var(--bg); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.rcp-ring-label { pointer-events: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.rcp-ring-center { fill: var(--fg); font-size: 28px; font-weight: 600; }
+.rcp-ring-sub { fill: var(--muted); font-size: 12px; }
+.rcp-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
+.rcp-legend li { display: flex; align-items: center; gap: 0.5rem; }
+.rcp-swatch { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+.rcp-legend-note { font-size: 0.85rem; max-width: 22rem; }
+
+/* owners that are down (Ring page) */
+.rcp-down {
+  color: var(--error); border: 1px solid var(--error); border-radius: 4px;
+  font-size: 0.75rem; padding: 0 0.3rem; margin-left: 0.35rem; text-transform: uppercase;
+}
+.rcp-down-note { border: 1px solid var(--error); border-radius: 6px; padding: 0.5rem 0.75rem; margin: 0.75rem 0; }
+.rcp-down-note p { margin: 0.2rem 0; }
+.rcp-hatch-bg { fill: var(--bg); fill-opacity: 0.45; }
+.rcp-hatch-line { stroke: var(--bg); stroke-width: 3; stroke-opacity: 0.8; }
+.rcp-swatch-down { background-image: repeating-linear-gradient(45deg, transparent 0 3px, var(--bg) 3px 5px); }
+
+/* Fallback column (Ring page) */
+.rcp-fallback { color: var(--muted); font-size: 0.8rem; margin-left: 0.35rem; }
+.rcp-fallback.running { color: var(--ok); }
+.rcp-help { font-size: 0.85rem; max-width: 52rem; margin: 0.25rem 0 0.5rem; }
+.rcp-filter + .rcp-filter { margin-left: 1rem; }
