@@ -60,6 +60,27 @@ defmodule RiakCorePlugin.RiakTest do
     assert node in up
   end
 
+  test "members/1: each up member says what it runs, its ring and versions", %{node: node} do
+    assert {:ok, %{nodes: %{^node => info}, ring: ring, pending: []}} = Riak.members(target(node))
+    assert info.ring == ring
+    assert info.vnodes == 0 and info.not_owned == 0 and info.handoffs == 0
+    # no riak_core_node_watcher on the test node: unknown, not an error
+    assert info.services == nil
+    assert info.otp == System.otp_release()
+    assert is_integer(info.uptime_ms) and is_integer(info.memory)
+
+    [row] =
+      Data.member_details(%{
+        members: [{node, :valid}],
+        counts: [{node, 8}],
+        up: [node],
+        nodes: %{node => info},
+        ring: ring
+      })
+
+    assert row.ring_agrees and row.share == 100.0
+  end
+
   test "up_nodes/1 is the target plus the nodes it sees", %{node: node} do
     assert {:ok, up} = Riak.up_nodes(target(node))
     assert node in up and node() in up

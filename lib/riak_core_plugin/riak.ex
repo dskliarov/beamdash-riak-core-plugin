@@ -78,8 +78,45 @@ defmodule RiakCorePlugin.Riak do
   @members_exprs parse.("""
                  {riak_core_ring:all_member_status(R),
                   lists:foldl(fun({_, N}, D) -> orddict:update_counter(N, 1, D) end,
-                              orddict:new(), riak_core_ring:all_owners(R))}
+                              orddict:new(), riak_core_ring:all_owners(R)),
+                  riak_core_ring:pending_changes(R),
+                  erlang:phash2({riak_core_ring:all_owners(R),
+                                 riak_core_ring:pending_changes(R),
+                                 riak_core_ring:all_member_status(R)})}
                  """)
+
+  # Run on each up member (erpc:multicall from the target): what only that
+  # node knows. `ring` hashes the same parts of its ring as @members_exprs,
+  # so a node whose ring differs from the target's shows up.
+  @node_exprs parse.("""
+              (fun(Me) ->
+                 Owned = [I || {I, N} <- riak_core_ring:all_owners(R), N =:= Me],
+                 Vnodes = riak_core_vnode_manager:all_vnodes(),
+                 Running = lists:usort([I || {_, I, _} <- Vnodes]),
+                 \#{vnodes => length(Vnodes),
+                   not_owned => length(Running -- Owned),
+                   handoffs => length(riak_core_handoff_manager:status()),
+                   ring => erlang:phash2({riak_core_ring:all_owners(R),
+                                          riak_core_ring:pending_changes(R),
+                                          riak_core_ring:all_member_status(R)}),
+                   services => case catch riak_core_node_watcher:services(Me) of
+                                 S when is_list(S) -> S;
+                                 _ -> undefined
+                               end,
+                   riak_core => case lists:keyfind(riak_core, 1,
+                                                   application:which_applications()) of
+                                  {_, _, V} -> list_to_binary(V);
+                                  false -> undefined
+                                end,
+                   otp => list_to_binary(erlang:system_info(otp_release)),
+                   uptime_ms => element(1, erlang:statistics(wall_clock)),
+                   memory => erlang:memory(total),
+                   processes => erlang:system_info(process_count)}
+               end)(node())
+              """)
+
+  # How long each member has to answer for the Members page.
+  @node_timeout 4_000
 
   @pending_exprs parse.("riak_core_ring:pending_changes(R)")
 
@@ -176,18 +213,46 @@ defmodule RiakCorePlugin.Riak do
   end
 
   @doc """
-  What the Members page needs: `%{members, counts, up}`, from
-  `riak_core_ring:all_member_status/1`, partitions per node counted on the
-  target from `all_owners/1` (`[{node, count}]`, sorted by node), and
-  `up_nodes/1`.
+  What the Members page needs: `%{members, counts, up, pending, ring,
+  nodes}`, from `riak_core_ring:all_member_status/1`, partitions per node
+  counted on the target from `all_owners/1` (`[{node, count}]`, sorted by
+  node), `up_nodes/1`, `pending_changes/1` and a hash of the target's ring
+  (`ring`).
+
+  `nodes` is `%{node => info | {:error, text}}` for the members that are
+  up, asked by the target in one `erpc:multicall/5` (#{@node_timeout} ms
+  each): `%{vnodes, not_owned, handoffs, ring, services, riak_core, otp,
+  uptime_ms, memory, processes}`. `not_owned` counts the partitions it runs
+  a vnode for but doesn't own (fallbacks, or handoffs still to do);
+  `ring` is the hash of its own ring, to compare with the target's.
   """
   @spec members(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
   def members(target) do
-    with {:ok, {members, counts}} <- eval_ring(target, @members_exprs),
-         {:ok, up} <- up_nodes(target) do
-      {:ok, %{members: members, counts: counts, up: up}}
+    with {:ok, {members, counts, pending, ring}} <- eval_ring(target, @members_exprs),
+         {:ok, up} <- up_nodes(target),
+         {:ok, nodes} <- node_info(target, for({n, _} <- members, n in up, do: n)) do
+      {:ok,
+       %{members: members, counts: counts, up: up, pending: pending, ring: ring, nodes: nodes}}
     end
   end
+
+  defp node_info(_target, []), do: {:ok, %{}}
+
+  defp node_info(target, nodes) do
+    args = [nodes, :erl_eval, :exprs, [@node_exprs, []], @node_timeout]
+
+    with {:ok, results} <- call(target, :erpc, :multicall, args, @node_timeout + 2_000) do
+      {:ok, nodes |> Enum.zip(results) |> Map.new(fn {node, r} -> {node, node_result(r)} end)}
+    end
+  end
+
+  # Erlang's undefined (unknown services, no riak_core app) as nil
+  defp node_result({:ok, {:value, {:ok, info}, _}}),
+    do: Map.new(info, fn {k, v} -> {k, if(v == :undefined, do: nil, else: v)} end)
+
+  defp node_result({:ok, {:value, {:no_ring, other}, _}}), do: {:error, Data.error_message(other)}
+  defp node_result({:error, {:erpc, :timeout}}), do: {:error, "no answer in time"}
+  defp node_result({kind, reason}), do: {:error, Data.error_message({kind, reason})}
 
   @doc """
   `riak_core_status:ringready/0`: `{ok, Nodes} | {error, Reason}`, as

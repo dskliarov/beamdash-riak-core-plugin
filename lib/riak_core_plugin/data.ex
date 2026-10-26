@@ -64,6 +64,51 @@ defmodule RiakCorePlugin.Data do
   end
 
   @doc """
+  The Members page's rows, from `RiakCorePlugin.Riak.members/1`: each
+  `member_rows/3` row plus
+
+    * `share`: its partitions as a % of the ring (one decimal);
+    * `moving_out` / `moving_in`: partitions a committed change is moving
+      away from it / to it (`pending_changes/1`);
+    * `info`: what the node said about itself (see `Riak.members/1`), `nil`
+      for a node that is down, or `{:error, text}`;
+    * `ring_agrees`: whether its ring is the target's (`nil` unknown).
+  """
+  @spec member_details(map()) :: [map()]
+  def member_details(%{members: members, counts: counts, up: up} = m) do
+    total = counts |> Enum.map(&elem(&1, 1)) |> Enum.sum()
+    pending = Map.get(m, :pending, [])
+    nodes = Map.get(m, :nodes, %{})
+
+    members
+    |> member_rows(counts, up)
+    |> Enum.map(fn row ->
+      info = Map.get(nodes, row.node)
+
+      Map.merge(row, %{
+        share: if(total > 0, do: Float.round(row.partitions * 100 / total, 1), else: 0.0),
+        moving_out: Enum.count(pending, fn {_, owner, _, _, _} -> owner == row.node end),
+        moving_in: Enum.count(pending, fn {_, _, next, _, _} -> next == row.node end),
+        info: info,
+        ring_agrees: if(is_map(info) and m[:ring], do: info.ring == m.ring)
+      })
+    end)
+  end
+
+  @doc "A duration in ms as text: `45s`, `12m 5s`, `3h 20m`, `4d 2h`."
+  @spec uptime(non_neg_integer()) :: String.t()
+  def uptime(ms) when is_integer(ms) do
+    s = div(ms, 1000)
+
+    cond do
+      s >= 86_400 -> "#{div(s, 86_400)}d #{div(rem(s, 86_400), 3600)}h"
+      s >= 3600 -> "#{div(s, 3600)}h #{div(rem(s, 3600), 60)}m"
+      s >= 60 -> "#{div(s, 60)}m #{rem(s, 60)}s"
+      true -> "#{s}s"
+    end
+  end
+
+  @doc """
   The vnodes to fetch process info for, from
   `riak_core_vnode_manager:all_vnodes/0` (`[{module, index, pid}]`):
 

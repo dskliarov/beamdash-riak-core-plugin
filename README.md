@@ -68,9 +68,20 @@ attached one; otherwise the Nodes tab says why it couldn't switch.
   vnode is **running** or **not started** (it starts on the first request
   routed to it); "none up" when no node can take it. The Ring view's tooltips say the
   same. This is one more rpc, made only while an owner is down.
+  Above the partition list, the page explains what Owner, Next owner and
+  Fallback mean.
 - **Members**: each member's node, status (valid, joining, leaving,
-  exiting, down), the partitions it owns, and whether the target sees it up
-  (`erlang:nodes([this, visible])` on the target).
+  exiting, down), whether the target sees it up (`erlang:nodes([this,
+  visible])` on the target), the partitions it owns and their share of the
+  ring, and the partitions a committed change is moving away from it (↑)
+  or to it (↓). Each member that is up is also asked, in one
+  `erpc:multicall/5` from the target (4 s each), for what only it knows:
+  its vnodes, the partitions it runs a vnode for but doesn't own
+  (fallbacks, or handoffs still to do), its active handoffs, whether its
+  ring (owners, pending changes, member statuses) is the same as the
+  target's, its services (`riak_core_node_watcher`), its riak_core and OTP
+  versions, uptime and memory. A member that doesn't answer shows why. The
+  page explains Moving, Not owned, Ring and Services under the table.
 - **Vnodes**: module, partition, pid, mailbox, memory and reductions of each
   vnode (`riak_core_vnode_manager:all_vnodes/0`), sortable by column, with a
   module filter that lists the modules of all vnodes. Process info is

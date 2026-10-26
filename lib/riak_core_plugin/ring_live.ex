@@ -147,14 +147,31 @@ defmodule RiakCorePlugin.RingLive do
               </select>
             </label>
           </form>
-          <p :if={fallbacks(ring) != %{}} class="rcp-muted rcp-help">
-            Fallback: the node riak_core sends a down owner's requests to
-            (<code>riak_core_apl:get_apl_ann/4</code>
-            with the up nodes and N, riak_core's <code>target_n_val</code>
-            on {@node}). An application that routes with its own N may
-            pick another node. The vnode starts on the first request: "not started" means
-            nothing was routed there yet.
-          </p>
+          <dl class="rcp-explain">
+            <dt>Owner</dt>
+            <dd>
+              The node the ring assigns the partition to. Its vnode holds the partition's data,
+              and it stays the owner while the node is down: ownership only changes with a
+              committed cluster change.
+            </dd>
+            <dt>Next owner</dt>
+            <dd>
+              Where a committed change (join, leave, remove, replace, resize) is moving the
+              partition. It shows while the partition is handed off, from <code>riak_core_ring:pending_changes/1</code>,
+              and is empty once the handoff is done or when nothing is moving.
+              A change that is staged but not committed is only a plan: see the Admin page.
+            </dd>
+            <dt>Fallback</dt>
+            <dd>
+              Only while the owner is down: the up node that takes the owner's requests meanwhile,
+              as riak_core picks it for N replicas (<code>riak_core_apl:get_apl_ann/4</code>,
+              N = riak_core's <code>target_n_val</code> on {@node}; an application routing with
+              its own N may pick another node). It isn't in the ring and doesn't change ownership:
+              when the owner is back, the fallback hands the data back to it (hinted handoff).
+              The fallback's vnode starts on the first request routed there, so "not started"
+              means nothing was sent there yet.
+            </dd>
+          </dl>
           <table class="rcp-table">
             <thead>
               <tr>

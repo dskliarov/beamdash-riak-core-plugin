@@ -192,6 +192,29 @@ defmodule RiakCorePlugin.DataTest do
     end
   end
 
+  test "member_details/1: share, moves, the node's own answer and ring agreement" do
+    m = %{
+      members: [{:a@h, :valid}, {:b@h, :valid}, {:c@h, :down}],
+      counts: [{:a@h, 3}, {:b@h, 1}],
+      up: [:a@h, :b@h],
+      pending: [{1, :a@h, :b@h, [:m], :awaiting}, {2, :a@h, :b@h, [:m], :awaiting}],
+      ring: 42,
+      nodes: %{a@h: %{ring: 42}, b@h: %{ring: 7}}
+    }
+
+    [a, b, c] = Data.member_details(m)
+    assert {a.share, a.moving_out, a.moving_in, a.ring_agrees} == {75.0, 2, 0, true}
+    assert {b.share, b.moving_out, b.moving_in, b.ring_agrees} == {25.0, 0, 2, false}
+    assert {c.share, c.info, c.ring_agrees} == {0.0, nil, nil}
+  end
+
+  test "uptime/1" do
+    assert Data.uptime(45_000) == "45s"
+    assert Data.uptime(725_000) == "12m 5s"
+    assert Data.uptime(12_000_000) == "3h 20m"
+    assert Data.uptime(352_800_000) == "4d 2h"
+  end
+
   test "down_owners/1: owners not up, none when up isn't known" do
     ring = %{owners: [{0, :a@h}, {1, :b@h}, {2, :c@h}], up: [:a@h, :c@h]}
     assert Data.down_owners(ring) == [:b@h]

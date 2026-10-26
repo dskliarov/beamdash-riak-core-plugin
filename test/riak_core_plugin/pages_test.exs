@@ -66,6 +66,13 @@ defmodule RiakCorePlugin.PagesTest do
         view: "table"
       })
 
+    # what the columns mean, also when nothing is moving or down
+    assert html =~ ~s(<dl class="rcp-explain">)
+    assert html =~ "<dt>Next owner</dt>"
+    assert html =~ "riak_core_ring:pending_changes/1"
+    assert html =~ "<dt>Fallback</dt>"
+    assert html =~ "hinted handoff"
+
     assert filtered =~ "boom"
     # partition 1 belongs to b@h (moving to c@h): filtered out of the list
     refute filtered =~ "rcp-pending"
@@ -186,12 +193,63 @@ defmodule RiakCorePlugin.PagesTest do
     assert html =~ "fallback c@h (not started)"
   end
 
-  test "members" do
-    rows = [%{node: :a@h, status: :valid, partitions: 2, up: true}]
+  defp member(node, extra) do
+    Map.merge(
+      %{
+        node: node,
+        status: :valid,
+        partitions: 2,
+        share: 50.0,
+        up: true,
+        moving_out: 0,
+        moving_in: 0,
+        info: nil,
+        ring_agrees: nil
+      },
+      extra
+    )
+  end
+
+  test "members: what each member says about itself, and when it can't" do
+    info = %{
+      vnodes: 3,
+      not_owned: 1,
+      handoffs: 2,
+      ring: 7,
+      services: [:kv, :kv_store],
+      riak_core: "0.11.0",
+      otp: "28",
+      uptime_ms: 3_725_000,
+      memory: 2_097_152,
+      processes: 99
+    }
+
+    rows = [
+      member(:a@h, %{info: info, ring_agrees: true, moving_out: 1}),
+      member(:b@h, %{
+        info: %{info | not_owned: 0, services: nil},
+        ring_agrees: false,
+        moving_in: 1
+      }),
+      member(:c@h, %{up: false, status: :down}),
+      member(:d@h, %{info: {:error, "no answer in time"}})
+    ]
+
     html = render(MembersLive, %{members: {:ok, rows}})
-    assert html =~ "a@h"
-    assert html =~ "valid"
-    assert html =~ "up"
+    assert html =~ ~r/2 <span class="rcp-muted">· 50.0%/
+    assert html =~ ~r/title="moving away">\s*↑1/
+    assert html =~ ~r/title="moving here">\s*↓1/
+    assert html =~ ~s(<td class="rcp-num rcp-pending">1</td>)
+    assert html =~ ~r/class="rcp-ok">\s*same/
+    assert html =~ ~r/class="rcp-bad">\s*differs/
+    assert html =~ "kv, kv_store"
+    assert html =~ "<td>?</td>"
+    assert html =~ "riak_core 0.11.0 · OTP 28"
+    assert html =~ "1h 2m"
+    assert html =~ "2.0 MB"
+    assert html =~ "— (down)"
+    assert html =~ ~s(<td colspan="8" class="rcp-error">no answer in time</td>)
+    assert html =~ "<dt>Not owned</dt>"
   end
 
   test "vnodes" do
