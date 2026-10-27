@@ -77,6 +77,7 @@ defmodule RiakCorePlugin.RingLive do
             class={if match?({:ok, {:ok, _}}, @ready), do: "rcp-ok", else: "rcp-bad"}
           />
         </div>
+        <.claimant_note note={Data.claimant_note(ring.claimant, ring.members, ring[:up])} />
 
         <div :if={Data.down_owners(ring) != []} class="rcp-down-note" role="status">
           <p :for={node <- Data.down_owners(ring)}>
@@ -123,7 +124,12 @@ defmodule RiakCorePlugin.RingLive do
             <tbody>
               <tr :for={{node, count} <- Data.owners_by_node(ring.owners)}>
                 <td>
-                  <.node_link node={node} attached={@node} return={page_path(assigns, "ring")} />
+                  <.node_link
+                    node={node}
+                    attached={@node}
+                    return={page_path(assigns, "ring")}
+                    claimant={node == ring.claimant}
+                  />
                   <span :if={down?(ring, node)} class="rcp-down">down</span>
                 </td>
                 <td class="rcp-num">{count}</td>
@@ -172,7 +178,7 @@ defmodule RiakCorePlugin.RingLive do
               means nothing was sent there yet.
             </dd>
           </dl>
-          <table class="rcp-table">
+          <table class="rcp-table rcp-partitions">
             <thead>
               <tr>
                 <th class="rcp-num">#</th><th>Index</th><th>Owner</th><th>Next owner</th>
@@ -187,11 +193,21 @@ defmodule RiakCorePlugin.RingLive do
                 <td class="rcp-num">{n}</td>
                 <td class="rcp-mono">{row.index}</td>
                 <td>
-                  <.node_link node={row.owner} attached={@node} return={page_path(assigns, "ring")} />
+                  <.node_link
+                    node={row.owner}
+                    attached={@node}
+                    return={page_path(assigns, "ring")}
+                    claimant={row.owner == ring.claimant}
+                  />
                   <span :if={down?(ring, row.owner)} class="rcp-down">down</span>
                 </td>
                 <td class={row.next && "rcp-pending"}>
-                  <.node_link node={row.next} attached={@node} return={page_path(assigns, "ring")} />
+                  <.node_link
+                    node={row.next}
+                    attached={@node}
+                    return={page_path(assigns, "ring")}
+                    claimant={row.next != nil and row.next == ring.claimant}
+                  />
                 </td>
                 <td>
                   <.fallback
@@ -340,13 +356,13 @@ defmodule RiakCorePlugin.RingLive do
             class={["rcp-swatch", node in @down && "rcp-swatch-down"]}
             style={"background: #{elem(@colors[node], 0)}"}
           ></span>
-          <.node_link node={node} attached={@node} return={@return} />
+          <.node_link node={node} attached={@node} return={@return} claimant={node == @ring.claimant} />
           <span class="rcp-muted">{count} partitions</span>
           <span :if={node in @down} class="rcp-down">down</span>
         </li>
         <li :for={node <- @incoming}>
           <span class="rcp-swatch" style={"background: #{elem(@colors[node], 0)}"}></span>
-          <.node_link node={node} attached={@node} return={@return} />
+          <.node_link node={node} attached={@node} return={@return} claimant={node == @ring.claimant} />
           <span class="rcp-muted">no partitions yet</span>
         </li>
         <li :if={@down != []} class="rcp-muted rcp-legend-note">

@@ -147,3 +147,8 @@ button.rcp-danger-solid { background: var(--error); color: #fff; border-color: v
 .rcp-members th, .rcp-members td { white-space: nowrap; }
 .rcp-nowrap { white-space: nowrap; }
 .rcp-scroll ~ .rcp-explain { margin-top: 1rem; }
+.rcp-claimant-note { margin: 0.25rem 0 0.75rem; }
+.rcp-page .rcp-claimant { font-weight: 600; }
+.rcp-page .rcp-claimant::after { content: "claimant"; margin-left: 0.4em; padding: 0 0.4em; font-size: 0.75em; font-weight: 500; color: var(--accent); border: 1px solid currentColor; border-radius: 999px; vertical-align: 0.1em; }
+/* one row per partition: bold only, no tag on every row */
+.rcp-page .rcp-partitions .rcp-claimant::after { content: none; }

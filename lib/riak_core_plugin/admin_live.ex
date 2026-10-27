@@ -5,7 +5,8 @@ defmodule RiakCorePlugin.AdminLive do
   ring resizes are staged with the claimant; the page shows the plan the
   claimant makes of them (`riak_core_claimant:plan/0`) and commits or
   clears it. Marking a down node as down (`riak_core:down/1`) takes effect
-  at once.
+  at once; the button shows only on a member that doesn't respond (riak_core
+  refuses to mark down a node it can reach).
 
   Committing, clearing, force removing, force replacing and marking down
   ask for a confirmation first. Node names from the browser are only taken
@@ -74,18 +75,30 @@ defmodule RiakCorePlugin.AdminLive do
   def handle_event("down", %{"node" => node}, socket),
     do: member_action(socket, node, &{:down, &1}, &"#{&1} marked down")
 
+  # The replacement is a joining member, or a node that could join: then
+  # its join is staged first (`Riak.admin/3`'s `:join_and`).
   def handle_event("replace", %{"node" => node, "new" => new, "mode" => mode}, socket)
       when mode in ["replace", "force_replace"] do
+    kind = String.to_existing_atom(mode)
+    label = if kind == :replace, do: "Replace", else: "Force replace"
+
     with {:ok, node} <- member(socket, node),
-         {:ok, new} <- member(socket, new, [:joining]),
+         {:ok, new, join?} <- replacement(socket, new),
          true <- node != new do
-      if mode == "replace",
-        do: {:noreply, run(socket, {:replace, node, new}, "Replace of #{node} by #{new} staged")},
-        else:
-          {:noreply,
-           ask(socket, {:force_replace, node, new}, "Force replace of #{node} by #{new} staged")}
+      {action, text} =
+        if join?,
+          do:
+            {{:join_and, {kind, node, new}},
+             "Join of #{new} and #{String.downcase(label)} of #{node} staged"},
+          else: {{kind, node, new}, "#{label} of #{node} by #{new} staged"}
+
+      if kind == :replace,
+        do: {:noreply, run(socket, action, text)},
+        else: {:noreply, ask(socket, action, text)}
     else
-      _ -> {:noreply, assign(socket, note: {:error, "Pick a member and a joining node"})}
+      _ ->
+        {:noreply,
+         assign(socket, note: {:error, "Pick a member and a joining node or one that could join"})}
     end
   end
 
@@ -160,6 +173,23 @@ defmodule RiakCorePlugin.AdminLive do
     end
   end
 
+  # A replacement from its name in the browser: `{:ok, node, join?}` for a
+  # joining member (`false`) or a node that could join (`true`).
+  defp replacement(socket, text) do
+    with {:ok, cluster} <- socket.assigns.cluster || :error do
+      case member(socket, text, [:joining]) do
+        {:ok, node} ->
+          {:ok, node, false}
+
+        :error ->
+          case Enum.find(cluster.candidates, &(name(&1) == text)) do
+            nil -> :error
+            node -> {:ok, node, true}
+          end
+      end
+    end
+  end
+
   # A node the target sees, or a new name@host (an atom made from the
   # browser's text, as beamdash's own connect form does).
   defp join_node(text, cluster) do
@@ -199,6 +229,7 @@ defmodule RiakCorePlugin.AdminLive do
           <.card label="Claimant" value={name(cluster.claimant)} />
           <.card label="Members" value={"#{length(cluster.members)}"} />
         </div>
+        <.claimant_note note={Data.claimant_note(cluster.claimant, cluster.members, cluster.up)} />
 
         <h3>Members</h3>
         <.confirm_box :if={@confirm && not plan_action?(@confirm)} confirm={@confirm} busy={@busy} />
@@ -212,7 +243,12 @@ defmodule RiakCorePlugin.AdminLive do
           <tbody>
             <tr :for={row <- Data.member_rows(cluster.members, cluster.counts, cluster.up)}>
               <td>
-                <.node_link node={row.node} attached={@node} return={page_path(assigns, "admin")} />
+                <.node_link
+                  node={row.node}
+                  attached={@node}
+                  return={page_path(assigns, "admin")}
+                  claimant={row.node == cluster.claimant}
+                />
               </td>
               <td class={"rcp-status-#{row.status}"}>{row.status}</td>
               <td class="rcp-num">{row.partitions}</td>
@@ -247,6 +283,7 @@ defmodule RiakCorePlugin.AdminLive do
                   phx-click="down"
                   phx-value-node={row.node}
                   disabled={@busy}
+                  title={"Mark #{row.node} as down now"}
                 >
                   Mark down
                 </button>
@@ -277,7 +314,11 @@ defmodule RiakCorePlugin.AdminLive do
         </p>
 
         <h3>Replace a node</h3>
-        <form :if={joining(cluster) != []} phx-submit="replace" class="rcp-form">
+        <form
+          :if={joining(cluster) != [] or cluster.candidates != []}
+          phx-submit="replace"
+          class="rcp-form"
+        >
           <select name="node" aria-label="Node to replace">
             <option :for={{n, status} <- cluster.members} :if={status != :joining} value={n}>
               {n}
@@ -285,7 +326,12 @@ defmodule RiakCorePlugin.AdminLive do
           </select>
           <span>with</span>
           <select name="new" aria-label="Replacement node">
-            <option :for={n <- joining(cluster)} value={n}>{n}</option>
+            <optgroup :if={joining(cluster) != []} label="Joining">
+              <option :for={n <- joining(cluster)} value={n}>{n}</option>
+            </optgroup>
+            <optgroup :if={cluster.candidates != []} label="Not in the cluster (joins first)">
+              <option :for={n <- cluster.candidates} value={n}>{n}</option>
+            </optgroup>
           </select>
           <select name="mode" aria-label="Replace mode">
             <option value="replace">replace (hand off its data)</option>
@@ -293,8 +339,13 @@ defmodule RiakCorePlugin.AdminLive do
           </select>
           <button type="submit" disabled={@busy}>Stage</button>
         </form>
-        <p :if={joining(cluster) == []} class="rcp-muted">
-          Join the replacement node first: a node is replaced by a joining node.
+        <p :if={joining(cluster) != [] or cluster.candidates != []} class="rcp-muted">
+          A node is replaced by a joining node. Picking one that isn't in the cluster yet stages
+          its join first, then the replace; commit the plan to carry both out.
+        </p>
+        <p :if={joining(cluster) == [] and cluster.candidates == []} class="rcp-muted">
+          No node can replace one: start a riak_core node that {@node} can reach (with the same
+          ring size), or join one above.
         </p>
 
         <h3>Resize the ring</h3>
@@ -352,6 +403,7 @@ defmodule RiakCorePlugin.AdminLive do
                         node={row.node}
                         attached={@node}
                         return={page_path(assigns, "admin")}
+                        claimant={row.node == claimant(@cluster)}
                       />
                     </td>
                     <td class="rcp-num">{row.before}</td>
@@ -400,6 +452,10 @@ defmodule RiakCorePlugin.AdminLive do
 
   defp plan_action?({action, _text}), do: action in [:commit, :clear]
 
+  # the plan is shown on its own, also while the cluster is loading or failed
+  defp claimant({:ok, %{claimant: claimant}}), do: claimant
+  defp claimant(_cluster), do: nil
+
   defp joining(cluster), do: for({n, :joining} <- cluster.members, do: n)
 
   defp confirm_text(:commit),
@@ -412,6 +468,11 @@ defmodule RiakCorePlugin.AdminLive do
 
   defp confirm_text({:force_replace, node, new}),
     do: "Stage a force replace of #{node} by #{new}? Its data is not handed off."
+
+  defp confirm_text({:join_and, {:force_replace, node, new}}),
+    do:
+      "Join #{new} and stage a force replace of #{node} by it? " <>
+        "#{node}'s data is not handed off."
 
   defp confirm_text({:down, node}),
     do: "Mark #{node} as down now? The ring converges without it until it comes back."

@@ -51,7 +51,12 @@ defmodule RiakCorePlugin.MembersLive do
             <tbody>
               <tr :for={row <- rows}>
                 <td>
-                  <.node_link node={row.node} attached={@node} return={page_path(assigns, "members")} />
+                  <.node_link
+                    node={row.node}
+                    attached={@node}
+                    return={page_path(assigns, "members")}
+                    claimant={row.claimant}
+                  />
                 </td>
                 <td class={"rcp-status-#{row.status}"}>{row.status}</td>
                 <td class={if row.up, do: "rcp-ok", else: "rcp-bad"}>

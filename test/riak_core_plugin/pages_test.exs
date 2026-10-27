@@ -4,7 +4,7 @@ defmodule RiakCorePlugin.PagesTest do
 
   import Phoenix.LiveViewTest, only: [rendered_to_string: 1]
 
-  alias RiakCorePlugin.{HandoffsLive, MembersLive, RingLive, VnodesLive}
+  alias RiakCorePlugin.{AdminLive, HandoffsLive, MembersLive, RingLive, VnodesLive}
 
   defp pid, do: :c.pid(0, 101, 0)
 
@@ -23,8 +23,8 @@ defmodule RiakCorePlugin.PagesTest do
     members: [{:a@h, :valid}, {:b@h, :leaving}]
   }
 
-  test "the entry module declares the five pages" do
-    assert %{name: "riak_core", pages: pages} = RiakCorePlugin.__beamdash_plugin__()
+  test "the entry module declares the five pages, the Ring page the main one" do
+    assert %{name: "riak_core", pages: pages, main: "ring"} = RiakCorePlugin.__beamdash_plugin__()
     assert Enum.map(pages, & &1.slug) == ["ring", "members", "vnodes", "handoffs", "admin"]
   end
 
@@ -76,6 +76,56 @@ defmodule RiakCorePlugin.PagesTest do
     assert filtered =~ "boom"
     # partition 1 belongs to b@h (moving to c@h): filtered out of the list
     refute filtered =~ "rcp-pending"
+  end
+
+  test "admin: Mark down only on the members that don't respond and aren't marked down yet" do
+    cluster = %{
+      size: 4,
+      claimant: :a@h,
+      members: [{:a@h, :valid}, {:b@h, :valid}, {:c@h, :down}],
+      counts: [{:a@h, 2}, {:b@h, 2}],
+      up: [:a@h],
+      candidates: []
+    }
+
+    html =
+      render(AdminLive, %{
+        cluster: {:ok, cluster},
+        plan: nil,
+        confirm: nil,
+        busy: false,
+        note: nil,
+        join_node: ""
+      })
+
+    buttons = Regex.scan(~r/<button[^>]*phx-click="down"[^>]*>/, html) |> List.flatten()
+    assert [b] = buttons
+    assert b =~ ~s(phx-value-node="b@h") and not (b =~ "disabled")
+    assert b =~ ~s(title="Mark b@h as down now")
+  end
+
+  test "ring: the claimant is set apart wherever it is listed" do
+    html = render(RingLive, %{ring: {:ok, @ring}, ready: nil, filter: "", view: "table"})
+    # a@h is the attached node (plain text), b@h a link
+    assert html =~ ~s(<span class="rcp-claimant" title="the claimant">a@h</span>)
+    refute html =~ ~r/class="rcp-node rcp-claimant"[^>]*>b@h/
+    assert html =~ ~s(<table class="rcp-table rcp-partitions">)
+
+    html = render(RingLive, %{ring: {:ok, @ring}, ready: nil, filter: "", view: "ring", zoom: 1})
+    assert html =~ ~s(<span class="rcp-claimant" title="the claimant">a@h</span>)
+  end
+
+  test "ring: who takes over from the claimant, when the up nodes are known" do
+    assigns = %{ready: nil, filter: "", view: "table"}
+
+    html = render(RingLive, Map.put(assigns, :ring, {:ok, Map.put(@ring, :up, [:a@h, :b@h])}))
+    assert html =~ "If a@h leaves or is marked down, b@h becomes the claimant."
+
+    html = render(RingLive, Map.put(assigns, :ring, {:ok, Map.put(@ring, :up, [:b@h])}))
+    assert html =~ ~s(class="rcp-claimant-note rcp-bad")
+    assert html =~ "makes b@h the claimant"
+
+    refute render(RingLive, Map.put(assigns, :ring, {:ok, @ring})) =~ "rcp-claimant-note"
   end
 
   test "ring view: one numbered segment per partition, coloured by owner" do
@@ -204,7 +254,8 @@ defmodule RiakCorePlugin.PagesTest do
         moving_out: 0,
         moving_in: 0,
         info: nil,
-        ring_agrees: nil
+        ring_agrees: nil,
+        claimant: false
       },
       extra
     )
@@ -229,13 +280,16 @@ defmodule RiakCorePlugin.PagesTest do
       member(:b@h, %{
         info: %{info | not_owned: 0, services: nil},
         ring_agrees: false,
-        moving_in: 1
+        moving_in: 1,
+        claimant: true
       }),
       member(:c@h, %{up: false, status: :down}),
       member(:d@h, %{info: {:error, "no answer in time"}})
     ]
 
     html = render(MembersLive, %{members: {:ok, rows}})
+    assert html =~ ~r/class="rcp-node rcp-claimant"[^>]*>b@h</
+    refute html =~ ~r/class="rcp-node rcp-claimant"[^>]*>[cd]@h</
     assert html =~ ~r/2 <span class="rcp-muted">· 50.0%/
     assert html =~ ~r/title="moving away">\s*↑1/
     assert html =~ ~r/title="moving here">\s*↓1/

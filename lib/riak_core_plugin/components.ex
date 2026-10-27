@@ -123,22 +123,24 @@ defmodule RiakCorePlugin.Components do
   attr :node, :any, required: true, doc: "the node to show, an atom (or nil)"
   attr :attached, :atom, default: nil, doc: "the attached node, `@node`"
   attr :return, :string, default: nil, doc: "the page to come back to, `page_path/2`"
+  attr :claimant, :boolean, default: false, doc: "whether the node is the ring's claimant"
 
   @doc """
   A node's name. Another node than the attached one is a link that moves
   beamdash's connection there, as on beamdash's Nodes tab, and then comes
-  back to `return`.
+  back to `return`. The claimant's name is set apart (`rcp-claimant`).
   """
   def node_link(assigns) do
     ~H"""
     <.link
       :if={is_atom(@node) and @node not in [nil, :undefined, @attached]}
       navigate={Beamdash.Plugin.switch_path(@node, @return)}
-      class="rcp-node"
-      title={"Connect beamdash to #{@node}"}
-    >{@node}</.link><span :if={not is_atom(@node) or @node in [nil, :undefined, @attached]}>{name(
-      @node
-    )}</span>
+      class={["rcp-node", @claimant && "rcp-claimant"]}
+      title={"Connect beamdash to #{@node}" <> if(@claimant, do: " (the claimant)", else: "")}
+    >{@node}</.link><span
+      :if={not is_atom(@node) or @node in [nil, :undefined, @attached]}
+      {if(@claimant, do: [class: "rcp-claimant", title: "the claimant"], else: [])}
+    >{name(@node)}</span>
     """
   end
 
@@ -191,6 +193,21 @@ defmodule RiakCorePlugin.Components do
       <div class="rcp-card-label">{@label}</div>
       <div class={["rcp-card-value", @class]}>{@value}</div>
     </div>
+    """
+  end
+
+  attr :note, :any, required: true, doc: "`RiakCorePlugin.Data.claimant_note/3`"
+
+  @doc "Who would take over from the claimant (nothing when no one could)."
+  def claimant_note(assigns) do
+    ~H"""
+    <p
+      :if={@note}
+      class={["rcp-claimant-note", if(elem(@note, 0) == :bad, do: "rcp-bad", else: "rcp-muted")]}
+      role="status"
+    >
+      {elem(@note, 1)}
+    </p>
     """
   end
 end

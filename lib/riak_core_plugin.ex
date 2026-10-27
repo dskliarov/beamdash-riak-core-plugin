@@ -2,7 +2,8 @@ defmodule RiakCorePlugin do
   @moduledoc """
   The beamdash plugin for riak_core (and riak_core_lite): Ring, Members,
   Vnodes, Handoffs and Admin pages. It is active while `riak_core ~> 0.10` runs on
-  the attached node (see `mix.exs`).
+  the attached node (see `mix.exs`). The Ring page is its main page, also shown
+  on beamdash's Apps tab for riak_core.
   """
   use Beamdash.Plugin,
     name: "riak_core",
@@ -12,5 +13,6 @@ defmodule RiakCorePlugin do
       {"vnodes", "Vnodes", RiakCorePlugin.VnodesLive},
       {"handoffs", "Handoffs", RiakCorePlugin.HandoffsLive},
       {"admin", "Admin", RiakCorePlugin.AdminLive}
-    ]
+    ],
+    main: "ring"
 end

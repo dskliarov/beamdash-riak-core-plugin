@@ -54,7 +54,7 @@ defmodule RiakCorePlugin.RiakTest do
   end
 
   test "members/1: statuses, partitions per node and the up nodes", %{node: node} do
-    assert {:ok, %{members: [{^node, :valid}], counts: [{^node, 8}], up: up}} =
+    assert {:ok, %{members: [{^node, :valid}], counts: [{^node, 8}], up: up, claimant: ^node}} =
              Riak.members(target(node))
 
     assert node in up
@@ -261,6 +261,44 @@ defmodule RiakCorePlugin.RiakTest do
       assert Riak.admin(target(node), node, {:join, joiner}) == :ok
       assert Peer.calls(joiner) == [{:riak_core, {:staged_join, [node]}}]
       assert Peer.calls(node) == []
+    end
+
+    test "admin/3: join then replace, asked again until the claimant hears of the join",
+         %{node: node} do
+      {joiner_peer, joiner} = Peer.start()
+      on_exit(fn -> Peer.stop(joiner_peer) end)
+      Peer.put(node, :rcp_replies, [{:error, :invalid_replacement}, :ok])
+
+      assert Riak.admin(target(node), node, {:join_and, {:replace, :b@h, joiner}}) == :ok
+      assert Peer.calls(joiner) == [{:riak_core, {:staged_join, [node]}}]
+
+      assert Peer.calls(node) == [
+               {:riak_core_claimant, {:replace, [:b@h, joiner]}},
+               {:riak_core_claimant, {:replace, [:b@h, joiner]}}
+             ]
+    end
+
+    test "admin/3: join then replace: a failed join stages no replace; other refusals say so",
+         %{node: node} do
+      {joiner_peer, joiner} = Peer.start()
+      on_exit(fn -> Peer.stop(joiner_peer) end)
+
+      Peer.put(joiner, :rcp_reply, {:error, :not_single_node})
+      assert {:error, msg} = Riak.admin(target(node), node, {:join_and, {:replace, :b@h, joiner}})
+      assert msg == Data.admin_error({:error, :not_single_node})
+      assert Peer.calls(node) == []
+
+      Peer.put(joiner, :rcp_reply, :ok)
+      Peer.put(node, :rcp_reply, {:error, :already_replacement})
+
+      assert {:error, msg} =
+               Riak.admin(target(node), node, {:join_and, {:force_replace, :b@h, joiner}})
+
+      assert msg ==
+               "#{joiner} joined, but the replace wasn't staged: " <>
+                 Data.admin_error({:error, :already_replacement})
+
+      assert Peer.calls(node) == [{:riak_core_claimant, {:force_replace, [:b@h, joiner]}}]
     end
 
     test "admin/3: refusals in words", %{node: node} do

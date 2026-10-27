@@ -82,7 +82,8 @@ defmodule RiakCorePlugin.Riak do
                   riak_core_ring:pending_changes(R),
                   erlang:phash2({riak_core_ring:all_owners(R),
                                  riak_core_ring:pending_changes(R),
-                                 riak_core_ring:all_member_status(R)})}
+                                 riak_core_ring:all_member_status(R)}),
+                  riak_core_ring:claimant(R)}
                  """)
 
   # Run on each up member (erpc:multicall from the target): what only that
@@ -151,6 +152,10 @@ defmodule RiakCorePlugin.Riak do
   @admin_timeout 30_000
   # A join is asked of the joining node, by the target, with this timeout.
   @join_timeout 15_000
+  # After a join, how long (and how often) its replace is asked again while
+  # the claimant hasn't heard of the join yet.
+  @join_replace_wait 10_000
+  @join_replace_poll 250
   # How long a visible node has to say whether it runs riak_core.
   @candidate_timeout 2_000
 
@@ -214,10 +219,10 @@ defmodule RiakCorePlugin.Riak do
 
   @doc """
   What the Members page needs: `%{members, counts, up, pending, ring,
-  nodes}`, from `riak_core_ring:all_member_status/1`, partitions per node
-  counted on the target from `all_owners/1` (`[{node, count}]`, sorted by
-  node), `up_nodes/1`, `pending_changes/1` and a hash of the target's ring
-  (`ring`).
+  claimant, nodes}`, from `riak_core_ring:all_member_status/1`, partitions
+  per node counted on the target from `all_owners/1` (`[{node, count}]`,
+  sorted by node), `up_nodes/1`, `pending_changes/1`, a hash of the
+  target's ring (`ring`) and `claimant/1`.
 
   `nodes` is `%{node => info | {:error, text}}` for the members that are
   up, asked by the target in one `erpc:multicall/5` (#{@node_timeout} ms
@@ -228,11 +233,19 @@ defmodule RiakCorePlugin.Riak do
   """
   @spec members(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
   def members(target) do
-    with {:ok, {members, counts, pending, ring}} <- eval_ring(target, @members_exprs),
+    with {:ok, {members, counts, pending, ring, claimant}} <- eval_ring(target, @members_exprs),
          {:ok, up} <- up_nodes(target),
          {:ok, nodes} <- node_info(target, for({n, _} <- members, n in up, do: n)) do
       {:ok,
-       %{members: members, counts: counts, up: up, pending: pending, ring: ring, nodes: nodes}}
+       %{
+         members: members,
+         counts: counts,
+         up: up,
+         pending: pending,
+         ring: ring,
+         claimant: claimant,
+         nodes: nodes
+       }}
     end
   end
 
@@ -384,21 +397,56 @@ defmodule RiakCorePlugin.Riak do
       staged with `riak_core_claimant` (leave_member/1, remove_member/1,
       replace/2, force_replace/2, resize_ring/1, abort_resize/0);
     * `:commit` and `:clear`: `riak_core_claimant:commit/0` and `clear/0`;
-    * `{:down, node}`: `riak_core:down/1`, at once (no staging).
+    * `{:down, node}`: `riak_core:down/1`, at once (no staging);
+    * `{:join_and, {:replace | :force_replace, node, new}}`: the join of
+      `new`, then its replace of `node`. The cluster hears of a join by
+      gossip, so until the claimant's ring has `new` as joining the replace
+      is refused (`invalid_replacement`): it is asked again for up to
+      #{div(@join_replace_wait, 1000)} s.
 
   `:ok`, or `{:error, text}` with riak_core's reason in words (see
   `RiakCorePlugin.Data.admin_error/1`).
   """
   @spec admin(GenServer.server(), node(), term()) :: :ok | {:error, String.t()}
-  def admin(target, target_node, action) do
-    {mod, fun, args, timeout} = admin_call(action, target_node)
+  def admin(target, target_node, {:join_and, {kind, _node, new} = replace})
+      when kind in [:replace, :force_replace] do
+    with :ok <- admin(target, target_node, {:join, new}) do
+      deadline = System.monotonic_time(:millisecond) + @join_replace_wait
 
-    case call(target, mod, fun, args, timeout) do
-      {:ok, :ok} -> :ok
-      {:ok, other} -> {:error, Data.admin_error(other)}
-      {:error, message} -> {:error, message}
+      case stage_replace(target, target_node, replace, deadline) do
+        :ok -> :ok
+        {:error, message} -> {:error, "#{new} joined, but the replace wasn't staged: #{message}"}
+      end
     end
   end
+
+  def admin(target, target_node, action) do
+    action |> raw_admin(target, target_node) |> admin_result()
+  end
+
+  defp stage_replace(target, target_node, replace, deadline) do
+    case raw_admin(replace, target, target_node) do
+      {:ok, {:error, :invalid_replacement}} = refused ->
+        if System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(@join_replace_poll)
+          stage_replace(target, target_node, replace, deadline)
+        else
+          admin_result(refused)
+        end
+
+      result ->
+        admin_result(result)
+    end
+  end
+
+  defp raw_admin(action, target, target_node) do
+    {mod, fun, args, timeout} = admin_call(action, target_node)
+    call(target, mod, fun, args, timeout)
+  end
+
+  defp admin_result({:ok, :ok}), do: :ok
+  defp admin_result({:ok, other}), do: {:error, Data.admin_error(other)}
+  defp admin_result({:error, message}), do: {:error, message}
 
   defp admin_call({:join, node}, target_node) when is_atom(node),
     do:

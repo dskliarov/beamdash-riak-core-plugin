@@ -72,7 +72,8 @@ defmodule RiakCorePlugin.Data do
       away from it / to it (`pending_changes/1`);
     * `info`: what the node said about itself (see `Riak.members/1`), `nil`
       for a node that is down, or `{:error, text}`;
-    * `ring_agrees`: whether its ring is the target's (`nil` unknown).
+    * `ring_agrees`: whether its ring is the target's (`nil` unknown);
+    * `claimant`: whether it is the ring's claimant (`m.claimant`).
   """
   @spec member_details(map()) :: [map()]
   def member_details(%{members: members, counts: counts, up: up} = m) do
@@ -90,7 +91,8 @@ defmodule RiakCorePlugin.Data do
         moving_out: Enum.count(pending, fn {_, owner, _, _, _} -> owner == row.node end),
         moving_in: Enum.count(pending, fn {_, _, next, _, _} -> next == row.node end),
         info: info,
-        ring_agrees: if(is_map(info) and m[:ring], do: info.ring == m.ring)
+        ring_agrees: if(is_map(info) and m[:ring], do: info.ring == m.ring),
+        claimant: row.node == m[:claimant]
       })
     end)
   end
@@ -282,6 +284,61 @@ defmodule RiakCorePlugin.Data do
     members = MapSet.new(members, fn {node, _status} -> node end)
     up |> Enum.reject(&MapSet.member?(members, &1)) |> Enum.sort()
   end
+
+  @doc """
+  Who takes over from `claimant`, as `{:ok | :bad, text}` (`:bad` when the
+  claimant is down), or `nil` when no other member could. There is no call
+  to pick the claimant: riak_core gives the role to the first valid or
+  leaving member by name once the claimant is no longer one
+  (`riak_core_claimant:maybe_update_claimant/2`), and only that member can
+  take it, so the members ahead of it that are down have to be marked down
+  first. `members` is `riak_core_ring:all_member_status/1`, `up` the nodes
+  the target sees (`nil` when that isn't known).
+  """
+  @spec claimant_note(node() | :undefined, [{node(), atom()}], [node()] | nil) ::
+          {:ok | :bad, String.t()} | nil
+  def claimant_note(claimant, members, up) when is_list(up) do
+    eligible = for {node, status} <- Enum.sort(members), status in [:valid, :leaving], do: node
+
+    if claimant in eligible do
+      {blocked, rest} = Enum.split_while(eligible -- [claimant], &(&1 not in up))
+      claimant_text(claimant, claimant in up, blocked, List.first(rest))
+    end
+  end
+
+  def claimant_note(_claimant, _members, _up), do: nil
+
+  defp claimant_text(_claimant, true, [], nil), do: nil
+
+  defp claimant_text(claimant, true, [], next),
+    do: {:ok, "If #{claimant} leaves or is marked down, #{next} becomes the claimant."}
+
+  defp claimant_text(claimant, true, blocked, next) do
+    {:ok,
+     "If #{claimant} leaves or is marked down, the role goes to #{Enum.join(blocked, ", ")}, " <>
+       "which #{if match?([_], blocked), do: "is", else: "are"} down: " <>
+       if(next,
+         do: "mark #{them(blocked)} down too for #{next} to become the claimant.",
+         else: "no other member is up to take over."
+       )}
+  end
+
+  defp claimant_text(claimant, false, _blocked, nil) do
+    {:bad,
+     "#{claimant}, the claimant, is down, so cluster changes can't be planned or committed. " <>
+       "No other member is up to take over: start #{claimant} again."}
+  end
+
+  defp claimant_text(claimant, false, blocked, next) do
+    {:bad,
+     "#{claimant}, the claimant, is down, so cluster changes can't be planned or committed. " <>
+       "Marking it down" <>
+       if(blocked == [], do: "", else: " (and #{Enum.join(blocked, ", ")}, down too)") <>
+       " on the Admin page makes #{next} the claimant."}
+  end
+
+  defp them([_]), do: "it"
+  defp them(_), do: "them"
 
   @doc """
   A staged change from `riak_core_claimant:plan/0` (`{node, action}`) as

@@ -31,4 +31,36 @@ defmodule RiakCorePlugin.ComponentsTest do
     assert Components.page_path(%{plugin: %{app: :riak_core_plugin}}, "ring") ==
              "/plugins/riak_core_plugin/ring"
   end
+
+  test "the claimant note: muted, in the error colour when the claimant is down, or nothing" do
+    html = render_component(&Components.claimant_note/1, note: {:ok, "b@h is next"})
+    assert html =~ ~s(class="rcp-claimant-note rcp-muted")
+    assert html =~ "b@h is next"
+
+    html = render_component(&Components.claimant_note/1, note: {:bad, "a@h is down"})
+    assert html =~ ~s(class="rcp-claimant-note rcp-bad")
+
+    refute render_component(&Components.claimant_note/1, note: nil) =~ "<p"
+  end
+
+  test "the claimant's name is set apart, as a link or as plain text" do
+    html =
+      render_component(&Components.node_link/1,
+        node: :"kv2@127.0.0.1",
+        attached: :"kv1@127.0.0.1",
+        claimant: true
+      )
+
+    assert html =~ ~s(class="rcp-node rcp-claimant")
+    assert html =~ ~s|title="Connect beamdash to kv2@127.0.0.1 (the claimant)"|
+
+    html =
+      render_component(&Components.node_link/1,
+        node: :"kv1@127.0.0.1",
+        attached: :"kv1@127.0.0.1",
+        claimant: true
+      )
+
+    assert html =~ ~s(<span class="rcp-claimant" title="the claimant">kv1@127.0.0.1</span>)
+  end
 end

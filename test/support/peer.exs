@@ -33,8 +33,9 @@ defmodule RiakCorePlugin.Test.Peer do
     -export([status/0]).
     status() -> persistent_term:get(rcp_handoffs, []).
     """,
-    # The admin calls: each is recorded (calls/1) and answers with
-    # rcp_reply (ok by default); plan/0 answers with rcp_plan.
+    # The admin calls: each is recorded (calls/1) and answers with the next
+    # of rcp_replies, then rcp_reply (ok by default); plan/0 answers with
+    # rcp_plan.
     riak_core_claimant: """
     -module(riak_core_claimant).
     -export([leave_member/1, remove_member/1, replace/2, force_replace/2,
@@ -50,7 +51,10 @@ defmodule RiakCorePlugin.Test.Peer do
     plan() -> persistent_term:get(rcp_plan, {ok, [], []}).
     rec(Call) ->
         persistent_term:put(rcp_calls, persistent_term:get(rcp_calls, []) ++ [{riak_core_claimant, Call}]),
-        persistent_term:get(rcp_reply, ok).
+        case persistent_term:get(rcp_replies, []) of
+            [Reply | Rest] -> persistent_term:put(rcp_replies, Rest), Reply;
+            [] -> persistent_term:get(rcp_reply, ok)
+        end.
     """,
     riak_core: """
     -module(riak_core).

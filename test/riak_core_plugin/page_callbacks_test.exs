@@ -172,6 +172,12 @@ defmodule RiakCorePlugin.PageCallbacksTest do
 
   test "a load that finishes after the node detached schedules nothing", %{target: target} do
     socket = mount(HandoffsLive, target)
+
+    # the result is in the mailbox before the detach (detaching cancels a
+    # load still running, and this socket never hears of a cancelled one)
+    assert_receive {:phoenix, :async_result, {:start, {_, nil, :handoffs, _}}} = result, 5_000
+    send(self(), result)
+
     FakeTarget.set_node(target, nil)
     socket = socket |> info({:beamdash_target, {:disconnected, :closed}}) |> await(:handoffs)
     assert timers(socket) == %{}
@@ -254,6 +260,33 @@ defmodule RiakCorePlugin.PageCallbacksTest do
       assert Peer.calls(node) == [{:riak_core_claimant, {:leave_member, [node]}}]
     end
 
+    test "a replacement that isn't in the cluster joins first, then replaces",
+         %{target: target, node: node} do
+      {joiner_peer, joiner} = Peer.start()
+      on_exit(fn -> Peer.stop(joiner_peer) end)
+
+      # the cluster as loaded, with the joiner among the nodes that could join
+      socket = admin(target)
+      {:ok, cluster} = socket.assigns.cluster
+      socket = Phoenix.Component.assign(socket, cluster: {:ok, %{cluster | candidates: [joiner]}})
+
+      html = render(socket)
+      assert html =~ ~s|<optgroup label="Not in the cluster (joins first)">|
+      assert html =~ ~s(<option value="#{joiner}">)
+
+      params = %{"node" => Atom.to_string(node), "new" => Atom.to_string(joiner)}
+      socket = socket |> event("replace", Map.put(params, "mode", "replace")) |> acted()
+      assert render(socket) =~ "Join of #{joiner} and replace of #{node} staged"
+      assert Peer.calls(joiner) == [{:riak_core, {:staged_join, [node]}}]
+      assert Peer.calls(node) == [{:riak_core_claimant, {:replace, [node, joiner]}}]
+
+      # a force replace asks first
+      socket = Phoenix.Component.assign(socket, cluster: {:ok, %{cluster | candidates: [joiner]}})
+      socket = event(socket, "replace", Map.put(params, "mode", "force_replace"))
+      refute :action in loading(socket)
+      assert render(socket) =~ "Join #{joiner} and stage a force replace of #{node} by it?"
+    end
+
     test "force remove asks first; cancel does nothing, confirm runs it",
          %{target: target, node: node} do
       socket = target |> admin() |> event("remove", %{"node" => Atom.to_string(node)})
@@ -288,6 +321,10 @@ defmodule RiakCorePlugin.PageCallbacksTest do
       socket = socket |> event("confirm", %{}) |> acted()
       assert Peer.calls(node) == [{:riak_core_claimant, {:commit, []}}]
       assert render(socket) =~ "Plan committed"
+    end
+
+    test "no Mark down on a member that responds", %{target: target} do
+      refute target |> admin() |> render() =~ ~s(phx-click="down")
     end
 
     test "a refusal is shown in words", %{target: target, node: node} do

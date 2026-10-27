@@ -199,6 +199,7 @@ defmodule RiakCorePlugin.DataTest do
       up: [:a@h, :b@h],
       pending: [{1, :a@h, :b@h, [:m], :awaiting}, {2, :a@h, :b@h, [:m], :awaiting}],
       ring: 42,
+      claimant: :b@h,
       nodes: %{a@h: %{ring: 42}, b@h: %{ring: 7}}
     }
 
@@ -206,6 +207,7 @@ defmodule RiakCorePlugin.DataTest do
     assert {a.share, a.moving_out, a.moving_in, a.ring_agrees} == {75.0, 2, 0, true}
     assert {b.share, b.moving_out, b.moving_in, b.ring_agrees} == {25.0, 0, 2, false}
     assert {c.share, c.info, c.ring_agrees} == {0.0, nil, nil}
+    assert {a.claimant, b.claimant, c.claimant} == {false, true, false}
   end
 
   test "uptime/1" do
@@ -318,5 +320,44 @@ defmodule RiakCorePlugin.DataTest do
     assert Data.admin_error({:badrpc, :nodedown}) =~ "not reachable"
     assert Data.admin_error({:error, :new_reason}) == ":new_reason"
     assert Data.admin_error(:weird) == ":weird"
+  end
+
+  describe "claimant_note/3" do
+    @members [{:a@h, :valid}, {:b@h, :valid}, {:c@h, :leaving}, {:d@h, :valid}, {:j@h, :joining}]
+
+    test "names the next valid or leaving member by name" do
+      assert Data.claimant_note(:a@h, @members, [:a@h, :b@h, :c@h, :d@h]) ==
+               {:ok, "If a@h leaves or is marked down, b@h becomes the claimant."}
+
+      assert {:ok, text} = Data.claimant_note(:d@h, @members, [:a@h, :d@h])
+      assert text =~ "a@h becomes the claimant"
+    end
+
+    test "members ahead that are down have to be marked down too" do
+      assert {:ok, text} = Data.claimant_note(:a@h, @members, [:a@h, :d@h])
+      assert text =~ "the role goes to b@h, c@h, which are down"
+      assert text =~ "mark them down too for d@h to become the claimant"
+
+      assert {:ok, text} = Data.claimant_note(:a@h, @members, [:a@h])
+      assert text =~ "no other member is up"
+    end
+
+    test "a down claimant: mark it down, or start it again" do
+      assert {:bad, text} = Data.claimant_note(:a@h, @members, [:b@h, :c@h])
+      assert text =~ "a@h, the claimant, is down"
+      assert text =~ "Marking it down on the Admin page makes b@h the claimant."
+
+      assert {:bad, text} = Data.claimant_note(:a@h, @members, [:d@h])
+      assert text =~ "Marking it down (and b@h, c@h, down too) on the Admin page makes d@h"
+
+      assert {:bad, text} = Data.claimant_note(:a@h, @members, [:j@h])
+      assert text =~ "start a@h again"
+    end
+
+    test "nothing when no one else could take over, or there is no claimant" do
+      assert Data.claimant_note(:a@h, [{:a@h, :valid}, {:j@h, :joining}], [:a@h, :j@h]) == nil
+      assert Data.claimant_note(:undefined, @members, [:a@h]) == nil
+      assert Data.claimant_note(:a@h, @members, nil) == nil
+    end
   end
 end
