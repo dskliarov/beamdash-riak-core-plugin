@@ -169,9 +169,10 @@ defmodule RiakCorePlugin.PagesTest do
 
     socket = step.(socket, "out")
     assert socket.assigns.zoom == 1
-    socket = Enum.reduce(1..6, socket, fn _, s -> step.(s, "in") end)
+    assert step.(socket, "in").assigns.zoom == 1.05
+    socket = Enum.reduce(1..61, socket, fn _, s -> step.(s, "in") end)
     assert socket.assigns.zoom == 4
-    assert step.(socket, "out").assigns.zoom == 3
+    assert step.(socket, "out").assigns.zoom == 3.95
     assert step.(socket, "reset").assigns.zoom == 1
   end
 
