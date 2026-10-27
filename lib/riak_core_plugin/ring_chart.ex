@@ -43,7 +43,8 @@ defmodule RiakCorePlugin.RingChart do
     |> Map.new(fn {node, i} -> {node, Enum.at(@palette, rem(i, length(@palette)))} end)
   end
 
-  @zooms [1, 1.5, 2, 3, 4]
+  # 100% to 400% in steps of 5%
+  @zooms for pct <- 100..400//5, do: pct / 100
 
   # the SVG is drawn 460 px wide at zoom 1; labels stay at least this many
   # px tall on screen, and are numbered on every k-th segment to fit
