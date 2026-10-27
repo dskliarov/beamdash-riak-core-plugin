@@ -7,7 +7,8 @@ defmodule RiakCorePlugin.RingLive do
   filter. Ring: the ring drawn as a circle of
   partitions numbered from 0, coloured by owner, with a legend
   (`RiakCorePlugin.RingChart`), and zoom buttons; zoomed in, the ring
-  scrolls in its box and big rings number more partitions.
+  scrolls in its box and big rings number more partitions. The zoom is
+  saved in beamdash's settings, so it survives restarts.
   """
   use Beamdash.Plugin.Page
 
@@ -21,7 +22,7 @@ defmodule RiakCorePlugin.RingLive do
   @impl true
   def plugin_mount(_params, _session, socket) do
     loads = [ring: {@ring_ms, &load_ring/1}, ready: {@ready_ms, &load_ready/1}]
-    {:ok, socket |> assign(filter: "", view: "table", zoom: 1) |> setup_loads(loads)}
+    {:ok, socket |> assign(filter: "", view: "table", zoom: saved_zoom()) |> setup_loads(loads)}
   end
 
   @impl true
@@ -53,10 +54,29 @@ defmodule RiakCorePlugin.RingLive do
         "reset" -> 0
       end
 
-    {:noreply, assign(socket, zoom: Enum.at(zooms, at))}
+    zoom = Enum.at(zooms, at)
+    save_zoom(zoom)
+    {:noreply, assign(socket, zoom: zoom)}
   end
 
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  # As a whole percent, in beamdash's plugin settings. Older beamdash builds
+  # have none: the zoom then starts at 100% each time.
+  @zoom_key "ring_zoom"
+
+  @doc false
+  def saved_zoom do
+    pct = if settings?(), do: Beamdash.Plugin.get_setting(:riak_core_plugin, @zoom_key, 100)
+    Enum.find(RingChart.zooms(), hd(RingChart.zooms()), &(round(&1 * 100) == pct))
+  end
+
+  defp save_zoom(zoom) do
+    if settings?(),
+      do: Beamdash.Plugin.put_setting(:riak_core_plugin, @zoom_key, round(zoom * 100))
+  end
+
+  defp settings?, do: function_exported?(Beamdash.Plugin, :put_setting, 3)
 
   @impl true
   def render(assigns) do

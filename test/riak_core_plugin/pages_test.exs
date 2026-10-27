@@ -176,6 +176,22 @@ defmodule RiakCorePlugin.PagesTest do
     assert step.(socket, "reset").assigns.zoom == 1
   end
 
+  test "the zoom is saved and comes back on the next mount" do
+    on_exit(fn -> Beamdash.Plugin.put_setting(:riak_core_plugin, "ring_zoom", nil) end)
+    assert RingLive.saved_zoom() == 1
+
+    socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}, zoom: 1}}
+    {:noreply, socket} = RingLive.handle_event("zoom", %{"by" => "in"}, socket)
+    {:noreply, _socket} = RingLive.handle_event("zoom", %{"by" => "in"}, socket)
+
+    assert Beamdash.Plugin.get_setting(:riak_core_plugin, "ring_zoom") == 110
+    assert RingLive.saved_zoom() == 1.1
+
+    # a value that is no zoom level any more starts at 100%
+    Beamdash.Plugin.put_setting(:riak_core_plugin, "ring_zoom", 123)
+    assert RingLive.saved_zoom() == 1
+  end
+
   test "ring: an owner that is down is said so, in the table and the ring" do
     ring = Map.put(@ring, :up, [:a@h])
     html = render(RingLive, %{ring: {:ok, ring}, ready: nil, filter: "", view: "table"})
