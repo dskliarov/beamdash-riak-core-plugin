@@ -1,0 +1,95 @@
+# Investigating a riak_core cluster
+
+Connect Beamdash to a node running `riak_core` or `riak_core_lite`, open **Notebooks**, and import this file. Run cells on the connected node. Each Erlang cell is independent and uses APIs also used by the Beamdash riak_core plugin; the plugin itself does not need to be installed on the target.
+
+These commands inspect state and do not change cluster membership or trigger handoffs. They are snapshots of the connected node, not a guarantee that every member agrees. The vnode scan collects information from local processes; on a busy node, run it sparingly.
+
+## Confirm the target and application
+
+The application name is `riak_core` for both implementations. A missing application means the remaining commands cannot inspect a running riak_core cluster on this node.
+
+```erlang
+(fun() ->
+    #{node => node(), otp_release => erlang:system_info(otp_release),
+      riak_core => lists:keyfind(riak_core, 1, application:which_applications()),
+      visible_nodes => nodes()}
+end)().
+```
+
+## Ring and members
+
+The claimant coordinates changes. The member statuses and owners come from the connected node's current ring; a visible Erlang node is not necessarily a healthy riak_core member.
+
+```erlang
+(fun() ->
+    case riak_core_ring_manager:get_my_ring() of
+        {ok, Ring} ->
+            #{partitions => riak_core_ring:num_partitions(Ring),
+              claimant => riak_core_ring:claimant(Ring),
+              members => riak_core_ring:all_member_status(Ring),
+              visible_nodes => nodes([this, visible])};
+        Other -> #{ring_error => Other}
+    end
+end)().
+```
+
+## Partition ownership
+
+Count partitions assigned to each owner and inspect the pending ownership changes. A down owner may still appear as owner until a cluster change is committed; ownership and running vnodes are different things.
+
+```erlang
+(fun() ->
+    case riak_core_ring_manager:get_my_ring() of
+        {ok, Ring} ->
+            Owners = riak_core_ring:all_owners(Ring),
+            Counts = lists:foldl(fun({_, Owner}, Acc) ->
+                maps:update_with(Owner, fun(N) -> N + 1 end, 1, Acc)
+            end, #{}, Owners),
+            #{partitions_per_owner => Counts,
+              pending_changes => riak_core_ring:pending_changes(Ring)};
+        Other -> #{ring_error => Other}
+    end
+end)().
+```
+
+## Services registered for this node
+
+```erlang
+riak_core_node_watcher:services(node()).
+```
+
+## Local vnodes and process pressure
+
+Count vnodes by module and show the 20 with the largest local process mailboxes. `all_vnodes/0` and process information concern this node only; a vnode can exit during the scan. Queue length is a point-in-time signal, not proof of a problem.
+
+```erlang
+(fun() ->
+    Vnodes = riak_core_vnode_manager:all_vnodes(),
+    Counts = lists:foldl(fun({Module, _, _}, Acc) ->
+        maps:update_with(Module, fun(N) -> N + 1 end, 1, Acc)
+    end, #{}, Vnodes),
+    Rows = [#{module => Module, partition => Partition, pid => Pid,
+              queue => proplists:get_value(message_queue_len, Info, 0),
+              memory_bytes => proplists:get_value(memory, Info, 0),
+              reductions => proplists:get_value(reductions, Info, 0)}
+            || {Module, Partition, Pid} <- Vnodes, is_pid(Pid),
+               Info <- [process_info(Pid, [message_queue_len, memory, reductions])],
+               is_list(Info)],
+    Sorted = lists:sort(fun(A, B) -> maps:get(queue, A) > maps:get(queue, B) end, Rows),
+    #{total => length(Vnodes), by_module => Counts, largest_mailboxes => lists:sublist(Sorted, 20)}
+end)().
+```
+
+## Active handoffs on this node
+
+The raw handoff status is implementation-dependent; an empty list means no active handoffs were reported locally at this moment. Compare it with pending ring changes and check other members if needed.
+
+```erlang
+riak_core_handoff_manager:status().
+```
+
+## Follow up
+
+- Use the plugin's **Ring**, **Members**, **Vnodes**, and **Handoffs** pages to compare owners, member visibility, fallback vnodes, and handoff progress.
+- `riak_core_status:ringready()` asks members about ring readiness and may take more than 30 seconds when a member is unreachable. Run it separately with a sufficient notebook timeout when that cost is acceptable.
+- Membership changes and ring resizing affect the cluster. Use the plugin's **Admin** page and its staged plan and confirmation workflow when a change is needed.
