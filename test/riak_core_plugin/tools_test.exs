@@ -46,6 +46,30 @@ defmodule RiakCorePlugin.ToolsTest do
     assert {:ok, _} = Jason.encode(member)
   end
 
+  test "a member that does not answer shows its error as JSON" do
+    {peer, node} = Peer.start()
+    {bare_peer, bare} = Peer.start(riak: false)
+
+    on_exit(fn ->
+      Peer.stop(peer)
+      Peer.stop(bare_peer)
+    end)
+
+    Peer.put(
+      node,
+      :rcp_ring,
+      :erpc.call(node, :riak_core_ring, :add_member, [node, Peer.fresh_ring(node, 8), bare])
+    )
+
+    true = :erpc.call(node, :net_kernel, :connect_node, [bare])
+    {:ok, _} = Beamdash.Target.connect(Atom.to_string(node), Node.get_cookie())
+
+    assert {:ok, members} = Tools.members(%{})
+    assert %{info: %{error: text}} = Enum.find(members, &(&1.node == bare))
+    assert is_binary(text)
+    assert {:ok, _} = Jason.encode(members)
+  end
+
   test "handoffs has no active handoffs or pending changes" do
     assert {:ok, %{active: [], pending: []}} = Tools.handoffs(%{})
   end

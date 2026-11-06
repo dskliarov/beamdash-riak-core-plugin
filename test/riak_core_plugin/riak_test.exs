@@ -46,7 +46,7 @@ defmodule RiakCorePlugin.RiakTest do
     assert ring.n_val == 4
   end
 
-  test "ring/2 with fallbacks: false makes no fallbacks rpc" do
+  test "ring/2 with fallbacks: false returns no fallbacks" do
     {peer, node} = Peer.start()
     on_exit(fn -> Peer.stop(peer) end)
     # every owner is ghost@nowhere, which is down

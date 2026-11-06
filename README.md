@@ -131,9 +131,11 @@ Members page only member statuses and partitions per node.
 While riak_core runs on the attached node, beamdash's MCP server offers
 three read-only tools from this plugin: `riak_core.ring`,
 `riak_core.members` and `riak_core.handoffs`. They return the same data as
-the Ring, Members and Handoffs pages, as JSON. Cluster changes (join, leave,
-commit) are not offered. Each tool has a 5-second limit set by beamdash, so
-on a large cluster `members` can run out of time.
+the Ring, Members and Handoffs pages, as JSON, except that `riak_core.ring`
+leaves out the fallback nodes (the Ring page's Fallback column): finding them
+takes one more rpc. Cluster changes (join, leave, commit) are not offered.
+Each tool has a 5-second limit set by beamdash, so on a large cluster
+`members` can run out of time.
 
 ## Develop
 
