@@ -1,10 +1,10 @@
 defmodule RiakCorePlugin.LoadLive do
   @moduledoc """
   The Load page: how busy each scheduler is, the node's I/O rates and
-  memory, and the processes that used the most reductions over a sample. Each
-  sample switches `scheduler_wall_time` on at the attached node for its window,
-  and it goes off when the sample ends. Erlang doesn't say which scheduler a process ran on, so the
-  busiest processes are where to look for a busy scheduler, not proof of it.
+  memory, and the processes that used the most reductions over a sample. The
+  first sample switches `scheduler_wall_time` on at the attached node, and it
+  stays on after that. Erlang doesn't say which scheduler a process ran on, so
+  the busiest processes are where to look for a busy scheduler, not proof of it.
   """
   use Beamdash.Plugin.Page
 

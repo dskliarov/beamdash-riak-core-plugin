@@ -122,7 +122,7 @@ defmodule RiakCorePlugin.Riak do
   # The Load page's sample: ms between the two reads, and the time the reads
   # of every process take on top of it.
   @load_window 1_000
-  @load_slack 10_000
+  @load_slack 3_000
 
   @pending_exprs parse.("riak_core_ring:pending_changes(R)")
 
