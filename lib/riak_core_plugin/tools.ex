@@ -9,7 +9,7 @@ defmodule RiakCorePlugin.Tools do
   alias RiakCorePlugin.{Data, Riak}
 
   def ring(_args) do
-    with {:ok, ring} <- Riak.ring(Beamdash.Target) do
+    with {:ok, ring} <- Riak.ring(Beamdash.Target, fallbacks: false) do
       {:ok,
        %{
          size: ring.size,
@@ -22,15 +22,14 @@ defmodule RiakCorePlugin.Tools do
            end),
          up: ring.up,
          down: Data.down_owners(ring),
-         pending: length(ring.pending),
-         fallbacks: map_size(ring.fallbacks)
+         pending: length(ring.pending)
        }}
     end
   end
 
   def members(_args) do
     with {:ok, members} <- Riak.members(Beamdash.Target) do
-      {:ok, Data.member_details(members)}
+      {:ok, members |> Data.member_details() |> Enum.map(&json_member/1)}
     end
   end
 
@@ -38,9 +37,15 @@ defmodule RiakCorePlugin.Tools do
     with {:ok, handoffs} <- Riak.handoffs(Beamdash.Target) do
       {:ok,
        %{
-         active: Data.handoff_rows(handoffs.active),
+         active: handoffs.active |> Data.handoff_rows() |> Enum.map(&json_handoff/1),
          pending: Data.pending_rows(handoffs.pending)
        }}
     end
   end
+
+  defp json_member(%{info: {:error, text}} = row), do: %{row | info: %{error: text}}
+  defp json_member(row), do: row
+
+  defp json_handoff(%{size: {n, unit}} = row), do: %{row | size: %{n: n, unit: unit}}
+  defp json_handoff(row), do: row
 end

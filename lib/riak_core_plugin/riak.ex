@@ -175,14 +175,16 @@ defmodule RiakCorePlugin.Riak do
   with `n_val` replicas (`riak_core_apl:get_apl_ann/4` with the up nodes;
   `nil` when there is none), and whether a vnode for the partition runs
   there yet (fallback vnodes start on the first request). One more rpc,
-  only when an owner is down.
+  only when an owner is down. With `fallbacks: false` that rpc is never
+  made and `fallbacks` is `nil`.
   """
-  @spec ring(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
-  def ring(target) do
+  @spec ring(GenServer.server(), keyword()) :: {:ok, map()} | {:error, String.t()}
+  def ring(target, opts \\ []) do
     with {:ok, {size, claimant, owners, pending, members, n_val}} <-
            eval_ring(target, @ring_exprs),
          {:ok, up} <- up_nodes(target),
-         {:ok, fallbacks} <- fallbacks(target, owners, up, n_val) do
+         {:ok, fallbacks} <-
+           fallbacks(target, owners, up, n_val, Keyword.get(opts, :fallbacks, true)) do
       {:ok,
        %{
          size: size,
@@ -197,7 +199,9 @@ defmodule RiakCorePlugin.Riak do
     end
   end
 
-  defp fallbacks(target, owners, up, n_val) do
+  defp fallbacks(_target, _owners, _up, _n_val, false), do: {:ok, nil}
+
+  defp fallbacks(target, owners, up, n_val, true) do
     if Enum.all?(owners, fn {_idx, node} -> node in up end) do
       {:ok, %{}}
     else

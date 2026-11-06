@@ -33,7 +33,7 @@ defmodule RiakCorePlugin.ToolsTest do
     assert node in ring.up
     assert ring.down == []
     assert ring.pending == 0
-    assert ring.fallbacks == 0
+    assert {:ok, _} = Jason.encode(ring)
   end
 
   test "members lists each member with its partitions", %{node: node} do
@@ -42,10 +42,38 @@ defmodule RiakCorePlugin.ToolsTest do
     assert member.partitions == 8
     assert member.claimant
     assert member.up
+    assert member.info.vnodes == 0
+    assert {:ok, _} = Jason.encode(member)
   end
 
   test "handoffs has no active handoffs or pending changes" do
     assert {:ok, %{active: [], pending: []}} = Tools.handoffs(%{})
+  end
+
+  test "an active handoff's size is a map that encodes as JSON", %{node: node} do
+    on_exit(fn -> Peer.put(node, :rcp_handoffs, []) end)
+
+    Peer.put(node, :rcp_handoffs, [
+      {:status_v2,
+       [
+         type: :ownership,
+         mod: :a_vnode,
+         src_partition: 0,
+         target_partition: 1,
+         src_node: node,
+         target_node: :b@h,
+         direction: :outbound,
+         status: :awaiting,
+         start_ts: {1_700, 0, 0},
+         stats: [size: {2048, :bytes}, pct_done_decimal: 0.5]
+       ]}
+    ])
+
+    assert {:ok, %{active: [handoff]} = data} = Tools.handoffs(%{})
+    assert handoff.size == %{n: 2048, unit: :bytes}
+    assert handoff.progress == 0.5
+    assert handoff.from == node and handoff.to == :b@h
+    assert {:ok, _} = Jason.encode(data)
   end
 
   test "a tool says so when no node is attached" do

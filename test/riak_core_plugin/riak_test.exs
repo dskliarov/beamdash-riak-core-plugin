@@ -46,6 +46,17 @@ defmodule RiakCorePlugin.RiakTest do
     assert ring.n_val == 4
   end
 
+  test "ring/2 with fallbacks: false makes no fallbacks rpc" do
+    {peer, node} = Peer.start()
+    on_exit(fn -> Peer.stop(peer) end)
+    # every owner is ghost@nowhere, which is down
+    Peer.put(node, :rcp_ring, :erpc.call(node, :riak_core_ring, :fresh, [8, :ghost@nowhere]))
+
+    assert {:ok, %{fallbacks: fallbacks}} = Riak.ring(target(node))
+    assert map_size(fallbacks) == 8
+    assert {:ok, %{fallbacks: nil}} = Riak.ring(target(node), fallbacks: false)
+  end
+
   test "ring/1: N is riak_core's target_n_val on the attached node", %{node: node} do
     :ok = :erpc.call(node, :application, :set_env, [:riak_core, :target_n_val, 2])
     on_exit(fn -> :erpc.call(node, :application, :unset_env, [:riak_core, :target_n_val]) end)

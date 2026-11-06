@@ -17,7 +17,7 @@ defmodule RiakCorePlugin do
     main: "ring",
     mcp_tools: [
       {"ring",
-       "The ring: size, claimant, members, partitions per node, down owners, pending changes, fallbacks",
+       "The ring: size, claimant, members, partitions per node, down owners, pending changes",
        %{type: "object", properties: %{}}, {RiakCorePlugin.Tools, :ring}},
       {"members", "Members with their status, partitions, share, what they say about themselves",
        %{type: "object", properties: %{}}, {RiakCorePlugin.Tools, :members}},
