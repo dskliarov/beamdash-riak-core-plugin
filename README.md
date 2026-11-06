@@ -126,6 +126,15 @@ of the plugin's modules has to exist on the target. The Ring page reads
 size, claimant, owners, pending changes and member statuses that way; the
 Members page only member statuses and partitions per node.
 
+## MCP tools
+
+While riak_core runs on the attached node, beamdash's MCP server offers
+three read-only tools from this plugin: `riak_core.ring`,
+`riak_core.members` and `riak_core.handoffs`. They return the same data as
+the Ring, Members and Handoffs pages, as JSON. Cluster changes (join, leave,
+commit) are not offered. Each tool has a 5-second limit set by beamdash, so
+on a large cluster `members` can run out of time.
+
 ## Develop
 
 The plugin is an ordinary Mix project next to a beamdash checkout:
