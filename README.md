@@ -1,6 +1,6 @@
 # riak_core plugin for beamdash
 
-A [beamdash](https://github.com/dskliarov/beamdash) plugin that adds five
+A [beamdash](https://github.com/dskliarov/beamdash) plugin that adds six
 pages for riak_core and riak_core_lite. It shows them in beamdash's Plugins
 menu while `riak_core ~> 0.10` runs on the attached node. The application
 name of riak_core_lite is `riak_core`.
@@ -90,6 +90,17 @@ attached one; otherwise the Nodes tab says why it couldn't switch.
   more, the page says "Showing the first 256 of N", N counting the selected
   module's vnodes, and sorting uses the vnodes that were fetched. A pid
   opens that vnode's process on beamdash's Processes tab.
+- **Load**: how busy each scheduler is, over a 1 s sample on the attached
+  node: the share of wall time each normal scheduler ran Erlang code
+  (`erlang:statistics(scheduler_wall_time)`), the average, the busiest and
+  the least busy one. Also input and output per second
+  (`erlang:statistics(io)`), memory by kind (`erlang:memory/0`), and the 20
+  processes that used the most reductions in the sample, with their name and
+  mailbox length. Each sample switches `scheduler_wall_time` on at the
+  attached node for its window and off again when the sample ends, so it adds
+  no cost between samples. Erlang doesn't say which scheduler a process ran
+  on: the busiest processes are where to look for a busy scheduler, not proof
+  of it.
 - **Handoffs**: active handoffs (`riak_core_handoff_manager:status/0`):
   type, module, partitions, from → to, direction, status, size or progress,
   start time and sender pid (a link to the process). Also the pending ownership changes
@@ -129,13 +140,15 @@ Members page only member statuses and partitions per node.
 ## MCP tools
 
 While riak_core runs on the attached node, beamdash's MCP server offers
-three read-only tools from this plugin: `riak_core.ring`,
-`riak_core.members` and `riak_core.handoffs`. They return the same data as
-the Ring, Members and Handoffs pages, as JSON, except that `riak_core.ring`
-leaves out the fallback nodes (the Ring page's Fallback column): finding them
-takes one more rpc. Cluster changes (join, leave, commit) are not offered.
+four read-only tools from this plugin: `riak_core.ring`,
+`riak_core.members`, `riak_core.handoffs` and `riak_core.load`. They return
+the same data as the Ring, Members, Handoffs and Load pages, as JSON, except
+that `riak_core.ring` leaves out the fallback nodes (the Ring page's Fallback
+column): finding them takes one more rpc. `riak_core.load` takes a 1-second
+sample when it is called, as the Load page does, so its rates are for that
+second. Cluster changes (join, leave, commit) are not offered.
 Each tool has a 5-second limit set by beamdash, so on a large cluster or a
-slow node `members` and `handoffs` can run out of time.
+slow node `members`, `handoffs` and `load` can run out of time.
 
 ## Develop
 

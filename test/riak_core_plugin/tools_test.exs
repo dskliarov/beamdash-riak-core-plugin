@@ -19,9 +19,9 @@ defmodule RiakCorePlugin.ToolsTest do
     :ok
   end
 
-  test "the plugin declares its three tools" do
+  test "the plugin declares its four tools" do
     assert Enum.map(RiakCorePlugin.__beamdash_plugin__().mcp_tools, & &1.name) ==
-             ["ring", "members", "handoffs"]
+             ["ring", "members", "handoffs", "load"]
   end
 
   test "ring summarises the attached node's ring", %{node: node} do
@@ -98,6 +98,22 @@ defmodule RiakCorePlugin.ToolsTest do
     assert handoff.progress == 0.5
     assert handoff.from == node and handoff.to == :b@h
     assert {:ok, _} = Jason.encode(data)
+  end
+
+  test "load samples the attached node and encodes as JSON", %{node: node} do
+    assert {:ok, load} = Tools.load(%{})
+    assert length(load.schedulers) == :erpc.call(node, :erlang, :system_info, [:schedulers])
+
+    assert Enum.map(load.memory, & &1.label) == [
+             "Total",
+             "Processes",
+             "System",
+             "Binaries",
+             "ETS",
+             "Code"
+           ]
+
+    assert {:ok, _} = Jason.encode(load)
   end
 
   test "a tool says so when no node is attached" do

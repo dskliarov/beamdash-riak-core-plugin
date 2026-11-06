@@ -6,6 +6,7 @@ defmodule RiakCorePlugin.Tools do
   and lists that encode as JSON.
   """
 
+  alias Beamdash.Plugin.Format
   alias RiakCorePlugin.{Data, Riak}
 
   def ring(_args) do
@@ -43,9 +44,22 @@ defmodule RiakCorePlugin.Tools do
     end
   end
 
+  def load(_args) do
+    with {:ok, load} <- Riak.load(Beamdash.Target) do
+      {:ok,
+       %{
+         load
+         | memory: Enum.map(load.memory, fn {label, bytes} -> %{label: label, bytes: bytes} end),
+           processes: Enum.map(load.processes, &json_process/1)
+       }}
+    end
+  end
+
   defp json_member(%{info: {:error, text}} = row), do: %{row | info: %{error: text}}
   defp json_member(row), do: row
 
   defp json_handoff(%{size: {n, unit}} = row), do: %{row | size: %{n: n, unit: unit}}
   defp json_handoff(row), do: row
+
+  defp json_process(%{pid: pid} = row), do: %{row | pid: Format.pid(pid, :erlang)}
 end

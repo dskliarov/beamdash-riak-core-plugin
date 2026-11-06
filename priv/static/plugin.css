@@ -86,6 +86,10 @@ button.rcp-danger-solid { background: var(--error); color: #fff; border-color: v
 .rcp-page a.rcp-pid { color: var(--accent); text-decoration: none; }
 .rcp-page a.rcp-pid:hover { text-decoration: underline; text-underline-offset: 3px; }
 
+/* Load page: busy share of each scheduler */
+.rcp-bar { width: 12rem; max-width: 100%; height: 0.6rem; background: var(--line); border-radius: 3px; overflow: hidden; }
+.rcp-bar-fill { height: 100%; background: var(--accent); }
+
 /* Ring page: Table / Ring views */
 .rcp-tabs { display: flex; gap: 0; margin: 1rem 0 0.5rem; border-bottom: 1px solid var(--line); }
 .rcp-page button.rcp-tab {

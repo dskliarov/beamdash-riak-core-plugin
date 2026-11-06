@@ -451,6 +451,99 @@ defmodule RiakCorePlugin.Data do
 
   def error_message(reason), do: inspect(reason)
 
+  @doc """
+  The Load page's view of one sample from `RiakCorePlugin.Riak.load/2`:
+  `%{window_ms, schedulers, avg_busy, hottest, coolest, io, memory,
+  processes}`. `schedulers` are `[%{id, busy}]` (busy as a percentage of
+  wall time); `io` is `%{input, output}` bytes per second; `memory` is
+  `[{label, bytes}]`; `processes` are the busiest by reductions.
+  """
+  @spec load_view(map()) :: map()
+  def load_view(%{
+        elapsed: ms,
+        schedulers: {before, later},
+        io: {io1, io2},
+        memory: memory,
+        top: top
+      }) do
+    schedulers = scheduler_busy(before, later)
+    busy = Enum.map(schedulers, & &1.busy)
+
+    %{
+      window_ms: ms,
+      schedulers: schedulers,
+      avg_busy: Enum.sum(busy) / length(busy),
+      hottest: Enum.max_by(schedulers, & &1.busy),
+      coolest: Enum.min_by(schedulers, & &1.busy),
+      io: io_rates(io1, io2, ms),
+      memory: memory_rows(memory),
+      processes: Enum.map(top, &process_row(&1, ms))
+    }
+  end
+
+  @doc """
+  Each scheduler's busy percentage over the window, from two reads of
+  `erlang:statistics(scheduler_wall_time)`: `[{id, active, total}]`.
+  """
+  @spec scheduler_busy([{pos_integer(), integer(), integer()}], [
+          {pos_integer(), integer(), integer()}
+        ]) ::
+          [%{id: pos_integer(), busy: float()}]
+  def scheduler_busy(before, later) do
+    earlier = Map.new(before, fn {id, active, total} -> {id, {active, total}} end)
+
+    later
+    |> Enum.map(fn {id, active, total} ->
+      {active0, total0} = Map.get(earlier, id, {active, total})
+      span = total - total0
+      busy = if span > 0, do: (active - active0) / span * 100, else: 0.0
+      %{id: id, busy: busy}
+    end)
+    |> Enum.sort_by(& &1.id)
+  end
+
+  @doc "Bytes per second in and out, from two reads of `erlang:statistics(io)` `ms` apart."
+  @spec io_rates(term(), term(), non_neg_integer()) :: %{input: integer(), output: integer()}
+  def io_rates({{:input, in1}, {:output, out1}}, {{:input, in2}, {:output, out2}}, ms) do
+    %{input: per_second(in2 - in1, ms), output: per_second(out2 - out1, ms)}
+  end
+
+  @memory_labels [
+    total: "Total",
+    processes: "Processes",
+    system: "System",
+    binary: "Binaries",
+    ets: "ETS",
+    code: "Code"
+  ]
+
+  @doc "The `erlang:memory/0` figures the Load page shows, as `{label, bytes}`."
+  @spec memory_rows(keyword()) :: [{String.t(), non_neg_integer()}]
+  def memory_rows(memory) do
+    for {key, label} <- @memory_labels, do: {label, Keyword.get(memory, key, 0)}
+  end
+
+  defp process_row({pid, reductions, info}, ms) do
+    %{
+      pid: pid,
+      name: process_name(info),
+      mailbox: if(is_list(info), do: info[:message_queue_len]),
+      reductions_per_s: per_second(reductions, ms)
+    }
+  end
+
+  defp process_name(:undefined), do: "exited"
+
+  defp process_name(info) do
+    case {info[:registered_name], info[:initial_call]} do
+      {name, _} when is_atom(name) -> Atom.to_string(name)
+      {_, {m, f, a}} -> Exception.format_mfa(m, f, a)
+      _ -> nil
+    end
+  end
+
+  defp per_second(n, ms), do: if(ms > 0, do: round(n * 1000 / ms), else: 0)
+
   defp riak_module?({name, node}) when is_atom(name) and is_atom(node), do: riak_module?(name)
 
   defp riak_module?(mod) when is_atom(mod),
