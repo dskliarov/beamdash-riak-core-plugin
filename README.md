@@ -96,11 +96,10 @@ attached one; otherwise the Nodes tab says why it couldn't switch.
   the least busy one. Also input and output per second
   (`erlang:statistics(io)`), memory by kind (`erlang:memory/0`), and the 20
   processes that used the most reductions in the sample, with their name and
-  mailbox length. Each sample switches `scheduler_wall_time` on at the
-  attached node for its window and off again when the sample ends, so it adds
-  no cost between samples. Erlang doesn't say which scheduler a process ran
-  on: the busiest processes are where to look for a busy scheduler, not proof
-  of it.
+  mailbox length. The first sample switches `scheduler_wall_time` on at the
+  attached node, and it stays on after that. Erlang doesn't say which
+  scheduler a process ran on: the busiest processes are where to look for a
+  busy scheduler, not proof of it.
 - **Handoffs**: active handoffs (`riak_core_handoff_manager:status/0`):
   type, module, partitions, from → to, direction, status, size or progress,
   start time and sender pid (a link to the process). Also the pending ownership changes
