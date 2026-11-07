@@ -18,6 +18,56 @@ defmodule RiakCorePlugin.DataTest do
     end
   end
 
+  describe "scheduler_busy/2" do
+    test "is the active share of the time between two reads, by scheduler" do
+      before = [{2, 0, 1_000}, {1, 500, 1_000}]
+      later = [{1, 1_000, 2_000}, {2, 250, 2_000}]
+      assert Data.scheduler_busy(before, later) == [%{id: 1, busy: 50.0}, %{id: 2, busy: 25.0}]
+    end
+
+    test "a scheduler with no time in the window is 0%" do
+      assert Data.scheduler_busy([{1, 5, 10}], [{1, 5, 10}]) == [%{id: 1, busy: 0.0}]
+    end
+  end
+
+  describe "io_rates/3" do
+    test "bytes per second from two reads" do
+      before = {{:input, 1_000}, {:output, 500}}
+      later = {{:input, 3_000}, {:output, 1_500}}
+      assert Data.io_rates(before, later, 2_000) == %{input: 1_000, output: 500}
+    end
+  end
+
+  describe "load_view/1" do
+    test "shapes one sample for the Load page" do
+      sample = %{
+        elapsed: 1_000,
+        schedulers: {[{1, 0, 1_000}, {2, 0, 1_000}], [{1, 750, 2_000}, {2, 250, 2_000}]},
+        io: {{{:input, 0}, {:output, 0}}, {{:input, 2_048}, {:output, 1_024}}},
+        memory: [total: 4_096, processes: 1_024, binary: 512],
+        top: [
+          {pid1(), 500,
+           [registered_name: [], initial_call: {:gen_server, :loop, 7}, message_queue_len: 3]},
+          {pid2(), 10, :undefined}
+        ]
+      }
+
+      view = Data.load_view(sample)
+      assert view.window_ms == 1_000
+      assert view.avg_busy == 50.0
+      assert view.hottest == %{id: 1, busy: 75.0}
+      assert view.coolest == %{id: 2, busy: 25.0}
+      assert view.io == %{input: 2_048, output: 1_024}
+
+      assert [{"Total", 4_096}, {"Processes", 1_024}, {"System", 0}, {"Binaries", 512}, _, _] =
+               view.memory
+
+      assert [busy, exited] = view.processes
+      assert busy == %{pid: pid1(), name: ":gen_server.loop/7", mailbox: 3, reductions_per_s: 500}
+      assert exited == %{pid: pid2(), name: "exited", mailbox: nil, reductions_per_s: 10}
+    end
+  end
+
   describe "partition_rows/2" do
     test "sets next where a change is pending, sorted by index" do
       owners = [{2, :a}, {0, :a}, {1, :b}]

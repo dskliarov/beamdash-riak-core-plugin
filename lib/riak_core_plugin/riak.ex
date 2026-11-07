@@ -119,7 +119,40 @@ defmodule RiakCorePlugin.Riak do
   # How long each member has to answer for the Members page.
   @node_timeout 4_000
 
+  # The Load page's sample: ms between the two reads, and the time the reads
+  # of every process take on top of it.
+  @load_window 1_000
+  @load_slack 3_000
+
   @pending_exprs parse.("riak_core_ring:pending_changes(R)")
+
+  # One rpc: the reductions of every process are read twice on the target, and
+  # only the top ones come back. `Window` (ms) is bound by the caller. The
+  # scheduler list also holds the dirty CPU schedulers, which are left out.
+  @load_exprs parse_plain.("""
+              (fun() ->
+                 erlang:system_flag(scheduler_wall_time, true),
+                 Normal = fun(L) -> [S || {I, _, _} = S <- L, I =< erlang:system_info(schedulers)] end,
+                 Reductions = fun() ->
+                                maps:from_list([{P, R} || P <- erlang:processes(),
+                                                          {reductions, R} <- [erlang:process_info(P, reductions)]])
+                              end,
+                 Sched1 = Normal(erlang:statistics(scheduler_wall_time)),
+                 Io1 = erlang:statistics(io),
+                 Reds1 = Reductions(),
+                 T1 = erlang:monotonic_time(millisecond),
+                 timer:sleep(Window),
+                 Sched2 = Normal(erlang:statistics(scheduler_wall_time)),
+                 Io2 = erlang:statistics(io),
+                 Reds2 = Reductions(),
+                 T2 = erlang:monotonic_time(millisecond),
+                 Top = lists:sublist(lists:reverse(lists:keysort(2,
+                         [{P, R - maps:get(P, Reds1, 0)} || {P, R} <- maps:to_list(Reds2)])), 20),
+                 {T2 - T1, Sched1, Sched2, Io1, Io2, erlang:memory(),
+                  [{P, D, erlang:process_info(P, [registered_name, initial_call, message_queue_len])}
+                   || {P, D} <- Top]}
+               end)().
+              """)
 
   @cluster_exprs parse.("""
                  {riak_core_ring:num_partitions(R), riak_core_ring:claimant(R),
@@ -175,14 +208,16 @@ defmodule RiakCorePlugin.Riak do
   with `n_val` replicas (`riak_core_apl:get_apl_ann/4` with the up nodes;
   `nil` when there is none), and whether a vnode for the partition runs
   there yet (fallback vnodes start on the first request). One more rpc,
-  only when an owner is down.
+  only when an owner is down. With `fallbacks: false` that rpc is never
+  made and `fallbacks` is `nil`.
   """
-  @spec ring(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
-  def ring(target) do
+  @spec ring(GenServer.server(), keyword()) :: {:ok, map()} | {:error, String.t()}
+  def ring(target, opts \\ []) do
     with {:ok, {size, claimant, owners, pending, members, n_val}} <-
            eval_ring(target, @ring_exprs),
          {:ok, up} <- up_nodes(target),
-         {:ok, fallbacks} <- fallbacks(target, owners, up, n_val) do
+         {:ok, fallbacks} <-
+           fallbacks(target, owners, up, n_val, Keyword.get(opts, :fallbacks, true)) do
       {:ok,
        %{
          size: size,
@@ -197,7 +232,9 @@ defmodule RiakCorePlugin.Riak do
     end
   end
 
-  defp fallbacks(target, owners, up, n_val) do
+  defp fallbacks(_target, _owners, _up, _n_val, false), do: {:ok, nil}
+
+  defp fallbacks(target, owners, up, n_val, true) do
     if Enum.all?(owners, fn {_idx, node} -> node in up end) do
       {:ok, %{}}
     else
@@ -323,6 +360,31 @@ defmodule RiakCorePlugin.Riak do
     with {:ok, active} <- call(target, :riak_core_handoff_manager, :status, []),
          {:ok, pending} <- eval_ring(target, @pending_exprs) do
       {:ok, %{active: active, pending: pending}}
+    end
+  end
+
+  @doc """
+  The attached node's load over `window` ms, shaped by
+  `RiakCorePlugin.Data.load_view/1`. The first call switches
+  `scheduler_wall_time` on, and it stays on.
+  """
+  @spec load(GenServer.server(), pos_integer()) :: {:ok, map()} | {:error, String.t()}
+  def load(target, window \\ @load_window) do
+    bindings = :orddict.from_list([{:Window, window}])
+
+    case call(target, :erl_eval, :exprs, [@load_exprs, bindings], window + @load_slack) do
+      {:ok, {:value, {elapsed, sched1, sched2, io1, io2, memory, top}, _}} ->
+        {:ok,
+         Data.load_view(%{
+           elapsed: elapsed,
+           schedulers: {sched1, sched2},
+           io: {io1, io2},
+           memory: memory,
+           top: top
+         })}
+
+      error ->
+        error
     end
   end
 

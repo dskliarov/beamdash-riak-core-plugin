@@ -5,7 +5,7 @@ defmodule RiakCorePlugin.PageCallbacksTest do
   use ExUnit.Case, async: true
 
   alias Phoenix.LiveView.{Async, Lifecycle, Socket}
-  alias RiakCorePlugin.{AdminLive, HandoffsLive, MembersLive, RingLive, VnodesLive}
+  alias RiakCorePlugin.{AdminLive, HandoffsLive, LoadLive, MembersLive, RingLive, VnodesLive}
   alias RiakCorePlugin.Test.{FakeTarget, Peer}
 
   setup_all do
@@ -78,7 +78,7 @@ defmodule RiakCorePlugin.PageCallbacksTest do
   test "with no node attached nothing is loaded and no timer runs" do
     {:ok, target} = FakeTarget.start_link(nil)
 
-    for page <- [RingLive, MembersLive, VnodesLive, HandoffsLive, AdminLive] do
+    for page <- [RingLive, MembersLive, VnodesLive, LoadLive, HandoffsLive, AdminLive] do
       socket = mount(page, target)
       assert timers(socket) == %{}
       assert loading(socket) == []
@@ -211,8 +211,14 @@ defmodule RiakCorePlugin.PageCallbacksTest do
     assert {:ok, %{total: 3}} = socket.assigns.vnodes
   end
 
+  test "load: a sample is taken, and the next one is scheduled after it", %{target: target} do
+    socket = LoadLive |> mount(target) |> await(:load)
+    assert render(socket) =~ "Average busy"
+    assert timer_ms(socket, :load) in 1..5_000
+  end
+
   test "odd events don't crash the pages", %{target: target} do
-    for page <- [RingLive, MembersLive, VnodesLive, HandoffsLive, AdminLive] do
+    for page <- [RingLive, MembersLive, VnodesLive, LoadLive, HandoffsLive, AdminLive] do
       socket = mount(page, target)
       assert %Socket{} = event(socket, "nope", %{})
       assert %Socket{} = event(socket, "filter", %{"x" => "y"})

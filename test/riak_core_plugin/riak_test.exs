@@ -31,6 +31,22 @@ defmodule RiakCorePlugin.RiakTest do
     refute :erpc.call(node, :code, :is_loaded, [RiakCorePlugin.Data])
   end
 
+  test "load/2 samples the schedulers, I/O, memory and the busiest processes", %{node: node} do
+    {:ok, load} = Riak.load(target(node), 100)
+
+    assert load.window_ms >= 100
+    assert length(load.schedulers) == :erpc.call(node, :erlang, :system_info, [:schedulers])
+    assert Enum.all?(load.schedulers, &(&1.busy >= 0.0 and &1.busy <= 100.0))
+    assert load.io.input >= 0 and load.io.output >= 0
+
+    assert Enum.map(load.memory, &elem(&1, 0)) ==
+             ["Total", "Processes", "System", "Binaries", "ETS", "Code"]
+
+    assert length(load.processes) <= 20
+    reds = Enum.map(load.processes, & &1.reductions_per_s)
+    assert reds == Enum.sort(reds, :desc)
+  end
+
   test "ring/1 reads the five ring accessors in one call", %{node: node} do
     assert {:ok, ring} = Riak.ring(target(node))
     assert ring.size == 8
@@ -44,6 +60,17 @@ defmodule RiakCorePlugin.RiakTest do
     assert ring.fallbacks == %{}
     # riak_core's target_n_val (unset here: riak_core's default, 4) is the N
     assert ring.n_val == 4
+  end
+
+  test "ring/2 with fallbacks: false returns no fallbacks" do
+    {peer, node} = Peer.start()
+    on_exit(fn -> Peer.stop(peer) end)
+    # every owner is ghost@nowhere, which is down
+    Peer.put(node, :rcp_ring, :erpc.call(node, :riak_core_ring, :fresh, [8, :ghost@nowhere]))
+
+    assert {:ok, %{fallbacks: fallbacks}} = Riak.ring(target(node))
+    assert map_size(fallbacks) == 8
+    assert {:ok, %{fallbacks: nil}} = Riak.ring(target(node), fallbacks: false)
   end
 
   test "ring/1: N is riak_core's target_n_val on the attached node", %{node: node} do

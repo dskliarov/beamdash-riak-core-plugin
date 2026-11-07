@@ -4,7 +4,7 @@ defmodule RiakCorePlugin.PagesTest do
 
   import Phoenix.LiveViewTest, only: [rendered_to_string: 1]
 
-  alias RiakCorePlugin.{AdminLive, HandoffsLive, MembersLive, RingLive, VnodesLive}
+  alias RiakCorePlugin.{AdminLive, HandoffsLive, LoadLive, MembersLive, RingLive, VnodesLive}
 
   defp pid, do: :c.pid(0, 101, 0)
 
@@ -23,9 +23,17 @@ defmodule RiakCorePlugin.PagesTest do
     members: [{:a@h, :valid}, {:b@h, :leaving}]
   }
 
-  test "the entry module declares the five pages, the Ring page the main one" do
+  test "the entry module declares the six pages, the Ring page the main one" do
     assert %{name: "riak_core", pages: pages, main: "ring"} = RiakCorePlugin.__beamdash_plugin__()
-    assert Enum.map(pages, & &1.slug) == ["ring", "members", "vnodes", "handoffs", "admin"]
+
+    assert Enum.map(pages, & &1.slug) == [
+             "ring",
+             "members",
+             "vnodes",
+             "load",
+             "handoffs",
+             "admin"
+           ]
   end
 
   test "states: no node, loading, error" do
@@ -352,6 +360,35 @@ defmodule RiakCorePlugin.PagesTest do
     assert html =~ "2.0 KB"
     assert html =~ "exited"
     assert html =~ "▼"
+  end
+
+  test "load" do
+    sample =
+      RiakCorePlugin.Data.load_view(%{
+        elapsed: 1_000,
+        schedulers: {[{1, 0, 1_000}, {2, 0, 1_000}], [{1, 750, 2_000}, {2, 250, 2_000}]},
+        io: {{{:input, 0}, {:output, 0}}, {{:input, 2_048}, {:output, 1_024}}},
+        memory: [total: 4_096, processes: 1_024],
+        top: [
+          {pid(), 500,
+           [registered_name: [], initial_call: {:gen_server, :loop, 7}, message_queue_len: 3]},
+          {pid(), 10, :undefined}
+        ]
+      })
+
+    html = render(LoadLive, %{load: {:ok, sample}})
+    assert html =~ "Average busy"
+    assert html =~ "50.0%"
+    assert html =~ "75.0%"
+    assert html =~ "1: 75.0%"
+    assert html =~ "2.0 KB/s"
+    assert html =~ "4.0 KB"
+    assert html =~ ":gen_server.loop/7"
+    assert html =~ "exited"
+    assert html =~ "rcp-bar-fill"
+
+    assert render(LoadLive, %{load: {:error, "riak_core is not running"}}) =~
+             "riak_core is not running"
   end
 
   test "handoffs" do
