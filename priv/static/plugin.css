@@ -156,3 +156,14 @@ button.rcp-danger-solid { background: var(--error); color: #fff; border-color: v
 .rcp-page .rcp-claimant::after { content: "claimant"; margin-left: 0.4em; padding: 0 0.4em; font-size: 0.75em; font-weight: 500; color: var(--accent); border: 1px solid currentColor; border-radius: 999px; vertical-align: 0.1em; }
 /* one row per partition: bold only, no tag on every row */
 .rcp-page .rcp-partitions .rcp-claimant::after { content: none; }
+
+.rcp-history-chart { margin: 0.75rem 0; }
+.rcp-history-chart svg { display: block; width: 100%; max-width: 900px; height: 120px; }
+.rcp-history-chart polyline { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.rcp-history-avg { stroke: var(--accent); }
+.rcp-history-max { stroke: var(--muted); stroke-dasharray: 4 3; }
+.rcp-history-axis { stroke: var(--line); vector-effect: non-scaling-stroke; }
+.rcp-history-key { display: inline-block; width: 1rem; height: 0; border-top: 2px solid; vertical-align: middle; margin-left: 0.5rem; }
+.rcp-history-key-avg { border-color: var(--accent); }
+.rcp-history-key-max { border-color: var(--muted); border-top-style: dashed; }
+.rcp-history-changes { margin: 0.25rem 0 0; padding-left: 1.1rem; color: var(--muted); }

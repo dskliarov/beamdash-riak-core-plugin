@@ -12,7 +12,7 @@ defmodule RiakCorePlugin.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       description:
-        "A beamdash plugin with Ring, Members, Vnodes, Handoffs and Admin pages for riak_core.",
+        "A beamdash plugin with Ring, Members, Vnodes, Load, Handoffs, History and Admin pages for riak_core.",
       package: package(),
       source_url: @source_url,
       deps: deps()

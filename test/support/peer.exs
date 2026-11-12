@@ -58,7 +58,8 @@ defmodule RiakCorePlugin.Test.Peer do
     """,
     riak_core: """
     -module(riak_core).
-    -export([staged_join/1, down/1]).
+    -export([staged_join/1, down/1, vnode_modules/0]).
+    vnode_modules() -> persistent_term:get(rcp_vnode_modules, [{kv, kv_vnode}]).
     staged_join(N) -> rec({staged_join, [N]}).
     down(N) -> rec({down, [N]}).
     rec(Call) ->

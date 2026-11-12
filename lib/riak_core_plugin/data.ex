@@ -544,6 +544,481 @@ defmodule RiakCorePlugin.Data do
 
   defp per_second(n, ms), do: if(ms > 0, do: round(n * 1000 / ms), else: 0)
 
+  ## History (RiakCorePlugin.History, RiakCorePlugin.Collect)
+
+  @doc """
+  A cluster's key in the history: its name (`riak_core_ring:cluster_name/1`,
+  the node and time the cluster's first ring was made) as text. It is the
+  same on every member, so a cluster's history is one whichever member
+  beamdash is attached to.
+  """
+  @spec cluster_key(term()) :: String.t()
+  def cluster_key({node, {_, _, _} = ts}) when is_atom(node),
+    do: "#{node} #{timestamp(ts) || inspect(ts)}"
+
+  def cluster_key(other), do: inspect(other)
+
+  @doc """
+  Each handoff of the cluster once, from
+  `RiakCorePlugin.Riak.cluster_handoffs/1`'s `nodes`: `{active, answered}`.
+  `active` is `%{id => row}`, `id` being `{module, src_partition,
+  target_partition, from, to}` and `row` a `handoff_rows/1` row with
+  `reporter` (the node that reported it) and `start_ms`. Only the sender's
+  entries (outbound, or of no direction) are taken: the receiver reports
+  the same handoff as inbound. `answered` are the nodes that answered.
+  """
+  @spec cluster_handoffs(map()) :: {map(), MapSet.t()}
+  def cluster_handoffs(nodes) do
+    answered = for {node, {:ok, _}} <- nodes, into: MapSet.new(), do: node
+
+    active =
+      for {node, {:ok, statuses}} <- nodes,
+          status <- statuses,
+          %{known: true} = row <- [handoff_row(status)],
+          row.direction != :inbound,
+          into: %{} do
+        row = Map.merge(row, %{reporter: node, start_ms: start_ms(status)})
+        {handoff_id(row), row}
+      end
+
+    {active, answered}
+  end
+
+  defp handoff_id(row),
+    do: {row.module, row.src_partition, row.target_partition, row.from, row.to}
+
+  defp start_ms({:status_v2, props}), do: start_ms(props)
+
+  defp start_ms(props) when is_list(props) do
+    case props[:start_ts] do
+      {mega, sec, micro} when is_integer(mega) and is_integer(sec) and is_integer(micro) ->
+        (mega * 1_000_000 + sec) * 1000 + div(micro, 1000)
+
+      _ ->
+        nil
+    end
+  end
+
+  # A handoff that isn't seen for this long, its reporter not answering
+  # meanwhile, is forgotten without being recorded.
+  @handoff_stale_ms 600_000
+
+  @doc """
+  The handoffs that ended between two looks at the cluster: `{ended,
+  tracked}`. `previous` is the `tracked` of the previous look (`nil` at
+  first: then nothing has ended), `active` and `answered` are from
+  `cluster_handoffs/1`, `now` is unix ms. A handoff gone from `active` has
+  ended only when the node that reported it answered this time; otherwise
+  it is kept (for up to 10 minutes). `ended` are the events to store (see
+  `RiakCorePlugin.History`); `ended_ms` is the time of the look that no
+  longer saw it.
+  """
+  @spec handoff_changes(map() | nil, map(), MapSet.t(), integer()) :: {[map()], map()}
+  def handoff_changes(previous, active, answered, now) do
+    previous = previous || %{}
+
+    seen =
+      Map.new(active, fn {id, row} ->
+        first = with %{first_seen: t} <- previous[id], do: t, else: (_ -> now)
+        {id, %{row: row, first_seen: first, last_seen: now}}
+      end)
+
+    {ended, missing} =
+      previous
+      |> Map.drop(Map.keys(active))
+      |> Enum.split_with(fn {_id, t} -> MapSet.member?(answered, t.row.reporter) end)
+
+    tracked =
+      for {id, t} <- missing, now - t.last_seen < @handoff_stale_ms, into: seen, do: {id, t}
+
+    {ended |> Enum.map(fn {_id, t} -> ended_handoff(t, now) end) |> Enum.sort_by(& &1.started_ms),
+     tracked}
+  end
+
+  defp ended_handoff(%{row: row} = t, now) do
+    started = row.start_ms || t.first_seen
+
+    %{
+      type: row.type,
+      module: row.module,
+      src_partition: row.src_partition,
+      target_partition: row.target_partition,
+      from: row.from,
+      to: row.to,
+      started_ms: started,
+      ended_ms: now,
+      duration_ms: now - started,
+      last_seen_ms: t.last_seen,
+      size: json_size(row.size),
+      progress: row.progress
+    }
+  end
+
+  defp json_size({n, unit}), do: %{n: n, unit: unit}
+  defp json_size(nil), do: nil
+
+  # Handoff types the ring's pending changes record (`transfer_changes/5`);
+  # the others (hinted, repair) are recorded from the live handoffs alone.
+  @ring_types [:ownership, :resize]
+
+  @doc """
+  Splits ended live handoffs (`handoff_changes/4`) into those to store as
+  they are (hinted, repair) and those the ring records (ownership, resize),
+  which are kept in `live` by `{module, partition, from}` to add their size
+  and start to the ring's record (`transfer_changes/5`). Kept ones older than
+  an hour are dropped.
+  """
+  @spec split_ended([map()], map() | nil, integer()) :: {[map()], map()}
+  def split_ended(ended, live, now) do
+    {ring, direct} = Enum.split_with(ended, &(&1.type in @ring_types))
+
+    live =
+      for {k, hs} <- live || %{},
+          hs = Enum.filter(hs, &(now - &1.ended_ms < 3_600_000)),
+          hs != [],
+          into: %{},
+          do: {k, hs}
+
+    live =
+      Enum.reduce(ring, live, fn h, acc ->
+        Map.update(acc, {h.module, h.src_partition, h.from}, [h], &[h | &1])
+      end)
+
+    {direct, live}
+  end
+
+  @doc """
+  The ownership, resize and delete transfers that completed between two
+  looks at the ring's pending changes (`riak_core_ring:pending_changes/1`,
+  `[{index, owner, next_owner, done_modules, status}]`): `{done, tracked,
+  live}`. riak_core adds a module to an entry's done modules when its
+  transfer completes and keeps the entry until the claimant clears it, so a
+  transfer is seen done even when it took far less than the time between
+  looks. `previous` is the `tracked` of the previous look (`nil` at first:
+  then what is already done isn't recorded); `modules` are the vnode
+  modules; `live` the ended live handoffs from `split_ended/3`, whose size
+  and times are used (and dropped from `live`) when they match.
+
+  An entry cleared from the ring with modules not seen done (the claimant
+  finished it between looks, or the change was cleared or aborted) records
+  those modules with `seen_complete: false`.
+  """
+  @spec transfer_changes(map() | nil, list(), [module()], map(), integer()) ::
+          {[map()], map(), map()}
+  def transfer_changes(previous, pending, modules, live, now) do
+    first? = previous == nil
+    previous = previous || %{}
+
+    {done, tracked} =
+      Enum.reduce(pending, {[], %{}}, fn
+        {idx, owner, next, mods, _status}, {done, tracked} when is_list(mods) ->
+          tid = {idx, owner, next}
+          t = previous[tid] || %{first_seen: now, done: if(first?, do: mods, else: [])}
+          new = for mod <- mods -- t.done, do: {tid, mod, t.first_seen, true}
+          {new ++ done, Map.put(tracked, tid, %{t | done: Enum.uniq(t.done ++ mods)})}
+
+        _other, acc ->
+          acc
+      end)
+
+    cleared =
+      for {tid, t} <- previous,
+          not Map.has_key?(tracked, tid),
+          mod <- modules -- t.done,
+          do: {tid, mod, t.first_seen, false}
+
+    {events, live} =
+      Enum.map_reduce(Enum.reverse(done) ++ cleared, live, fn {tid, mod, first_seen, seen},
+                                                              live ->
+        {idx, owner, _next} = tid
+        {hs, live} = Map.pop(live, {mod, idx, owner}, [])
+        {transfer_done(tid, mod, first_seen, seen, hs, now), live}
+      end)
+
+    {Enum.sort_by(events, & &1.ended_ms), tracked, live}
+  end
+
+  defp transfer_done({idx, owner, next}, mod, first_seen, seen, handoffs, now) do
+    started = Enum.min([first_seen | for(h <- handoffs, do: h.started_ms)])
+    ended = if handoffs == [], do: now, else: Enum.max(for h <- handoffs, do: h.ended_ms)
+
+    %{
+      type: transfer_type(next),
+      module: mod,
+      src_partition: idx,
+      target_partition: transfer_target(next, idx, handoffs),
+      from: owner,
+      to: if(transfer_type(next) == :ownership, do: next),
+      started_ms: started,
+      ended_ms: ended,
+      duration_ms: ended - started,
+      size: handoffs |> Enum.map(& &1.size) |> sum_sizes(),
+      progress: nil,
+      handoffs: length(handoffs),
+      seen_complete: seen
+    }
+  end
+
+  # The next owner is a node, or a marker: '$resize', '$delete'.
+  defp transfer_type(:"$resize"), do: :resize
+  defp transfer_type(:"$delete"), do: :delete
+
+  defp transfer_type(next) when is_atom(next) do
+    if String.starts_with?(Atom.to_string(next), "$"), do: next, else: :ownership
+  end
+
+  defp transfer_type(_next), do: :ownership
+
+  defp transfer_target(next, idx, handoffs) do
+    case {transfer_type(next), Enum.uniq(for h <- handoffs, do: h.target_partition)} do
+      {:ownership, _} -> idx
+      {_, [target]} -> target
+      _ -> nil
+    end
+  end
+
+  defp sum_sizes([%{unit: unit} | _] = sizes) do
+    if Enum.all?(sizes, &match?(%{unit: ^unit}, &1)),
+      do: %{n: Enum.sum(for s <- sizes, do: s.n), unit: unit}
+  end
+
+  defp sum_sizes(_), do: nil
+
+  @doc """
+  What the history keeps of `RiakCorePlugin.Riak.membership/1` at `now`:
+  `%{members, size, claimant, pending, counts, pending_since}`, `members`
+  being `%{node => {status, up?}}`. `pending_since` is when the pending
+  changes were first seen (kept from `previous`), nil while there are none.
+  """
+  @spec cluster_snapshot(map(), map() | nil, integer()) :: map()
+  def cluster_snapshot(m, previous, now) do
+    since =
+      cond do
+        m.pending == 0 -> nil
+        previous != nil and previous.pending > 0 -> previous.pending_since
+        true -> now
+      end
+
+    %{
+      members: Map.new(m.members, fn {node, status} -> {node, {status, node in m.up}} end),
+      size: m.size,
+      claimant: m.claimant,
+      pending: m.pending,
+      counts: m.counts,
+      pending_since: since
+    }
+  end
+
+  @doc """
+  The member changes between two snapshots (`cluster_snapshot/3`):
+  `[%{node, from, to, was_up, up}]`, `from`/`to` being the member status
+  (nil when not a member) and `was_up`/`up` whether the target saw it up.
+  """
+  @spec member_changes(map(), map()) :: [map()]
+  def member_changes(before, later) do
+    (Map.keys(before.members) ++ Map.keys(later.members))
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.flat_map(fn node ->
+      case {before.members[node], later.members[node]} do
+        {same, same} ->
+          []
+
+        {b, l} ->
+          {from, was_up} = b || {nil, nil}
+          {to, up} = l || {nil, nil}
+          [%{node: node, from: from, to: to, was_up: was_up, up: up}]
+      end
+    end)
+  end
+
+  @doc """
+  The ring changes between two snapshots at `now`, as events (`event`
+  is the kind of change):
+
+    * `claimant`, `size`: `from`, `to`;
+    * `transfers_started`: pending changes appeared (`pending`, how many
+      partitions; `partitions`, per node, before they move);
+    * `transfers_done`: they are all done (`duration_ms` since they were
+      first seen; `partitions` per node now);
+    * `ownership`: the partitions per node changed with nothing pending
+      before or after, as a force remove does (`before`, `partitions`).
+  """
+  @spec ring_changes(map(), map(), integer()) :: [map()]
+  def ring_changes(before, later, now) do
+    [
+      before.claimant != later.claimant &&
+        %{event: "claimant", from: before.claimant, to: later.claimant},
+      before.size != later.size && %{event: "size", from: before.size, to: later.size},
+      (before.pending == 0 and later.pending > 0) &&
+        %{
+          event: "transfers_started",
+          pending: later.pending,
+          partitions: json_counts(later.counts)
+        },
+      (before.pending > 0 and later.pending == 0) &&
+        %{
+          event: "transfers_done",
+          duration_ms: now - before.pending_since,
+          partitions: json_counts(later.counts)
+        },
+      (before.pending == 0 and later.pending == 0 and before.counts != later.counts) &&
+        %{
+          event: "ownership",
+          before: json_counts(before.counts),
+          partitions: json_counts(later.counts)
+        }
+    ]
+    |> Enum.filter(& &1)
+  end
+
+  defp json_counts(counts), do: for({node, n} <- counts, do: %{node: node, partitions: n})
+
+  @doc """
+  One load sample for the history, from `load_view/1`: `%{avg_busy,
+  max_busy, max_scheduler, min_busy, schedulers, input, output, memory}`,
+  busy as percentages to one decimal, `schedulers` each scheduler's busy in
+  id order, `memory` the node's total bytes.
+  """
+  @spec load_sample(map()) :: map()
+  def load_sample(load) do
+    %{
+      avg_busy: Float.round(load.avg_busy * 1.0, 1),
+      max_busy: Float.round(load.hottest.busy * 1.0, 1),
+      max_scheduler: load.hottest.id,
+      min_busy: Float.round(load.coolest.busy * 1.0, 1),
+      schedulers: Enum.map(load.schedulers, &Float.round(&1.busy * 1.0, 1)),
+      input: load.io.input,
+      output: load.io.output,
+      memory: with({_, bytes} <- List.keyfind(load.memory, "Total", 0), do: bytes)
+    }
+  end
+
+  @doc "A unix ms time as `2026-11-11 10:00:05 UTC`."
+  @spec time_text(integer()) :: String.t()
+  def time_text(ms) when is_integer(ms),
+    do: ms |> DateTime.from_unix!(:millisecond) |> Calendar.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+  @doc """
+  The History page's rows for stored rows of `kind`, as text. The rows come
+  from `RiakCorePlugin.History.query/3`: their `data` has string keys, and
+  atoms and nodes are strings.
+  """
+  @spec history_rows(String.t(), [map()]) :: [map()]
+  def history_rows(kind, rows), do: Enum.map(rows, &history_row(kind, &1))
+
+  defp history_row("handoffs", %{data: d} = row) do
+    %{
+      at: time_text(row.at),
+      type: d["type"],
+      module: d["module"],
+      partition:
+        if(d["target_partition"] in [nil, d["src_partition"]],
+          do: "#{d["src_partition"]}",
+          else: "#{d["src_partition"]} → #{d["target_partition"]}"
+        ),
+      from: d["from"],
+      to: d["to"] || d["type"],
+      took: took(d),
+      size: history_size(d["size"])
+    }
+  end
+
+  defp history_row("members", %{data: d} = row),
+    do: %{at: time_text(row.at), node: d["node"], change: member_change_text(d)}
+
+  defp history_row("ring", %{data: d} = row),
+    do: %{at: time_text(row.at), change: ring_change_text(d)}
+
+  defp history_row("load", %{data: d} = row) do
+    %{
+      at: time_text(row.at),
+      at_ms: row.at,
+      node: row.node,
+      avg_busy: d["avg_busy"],
+      max_busy: d["max_busy"],
+      busiest: "#{d["max_scheduler"]}: #{d["max_busy"]}%",
+      input: d["input"],
+      output: d["output"],
+      memory: d["memory"]
+    }
+  end
+
+  defp history_row("admin", %{data: d} = row) do
+    %{
+      at: time_text(row.at),
+      node: row.node,
+      action: d["action"],
+      result: if(d["ok"], do: "done", else: "failed: #{d["error"]}"),
+      changes: d["changes"] || []
+    }
+  end
+
+  defp history_row(_kind, row), do: %{at: time_text(row.at), text: inspect(row.data)}
+
+  # Under a second when the ring recorded it between two looks without a
+  # live handoff seen: the time is only known to the look.
+  defp took(%{"duration_ms" => ms} = d) when is_integer(ms) do
+    cond do
+      d["seen_complete"] == false -> "#{uptime(ms)} (cleared before seen done)"
+      ms < 1000 -> "under 1s"
+      true -> uptime(ms)
+    end
+  end
+
+  defp took(_), do: nil
+
+  defp history_size(%{"n" => n, "unit" => "bytes"}), do: Beamdash.Plugin.Format.bytes(n)
+  defp history_size(%{"n" => n, "unit" => unit}), do: "#{n} #{unit}"
+  defp history_size(_), do: nil
+
+  @doc "A stored member change (`member_changes/2`) in words."
+  @spec member_change_text(map()) :: String.t()
+  def member_change_text(d) do
+    status =
+      case {d["from"], d["to"]} do
+        {nil, to} -> "joined (#{to})"
+        {from, nil} -> "left the ring (was #{from})"
+        {same, same} -> nil
+        {from, to} -> "#{from} → #{to}"
+      end
+
+    up =
+      case {d["was_up"], d["up"]} do
+        {true, false} -> "went down"
+        {false, true} -> "came back up"
+        {nil, false} -> "down"
+        _ -> nil
+      end
+
+    [status, up] |> Enum.reject(&is_nil/1) |> Enum.join(", ")
+  end
+
+  @doc "A stored ring change (`ring_changes/3`) in words."
+  @spec ring_change_text(map()) :: String.t()
+  def ring_change_text(%{"event" => "claimant"} = d), do: "claimant #{d["from"]} → #{d["to"]}"
+
+  def ring_change_text(%{"event" => "size"} = d),
+    do: "ring size #{d["from"]} → #{d["to"]} partitions"
+
+  def ring_change_text(%{"event" => "transfers_started"} = d),
+    do: "#{d["pending"]} partition transfers pending; partitions: #{counts_text(d["partitions"])}"
+
+  def ring_change_text(%{"event" => "transfers_done"} = d),
+    do:
+      "transfers done after #{uptime(d["duration_ms"])}; partitions: #{counts_text(d["partitions"])}"
+
+  def ring_change_text(%{"event" => "ownership"} = d),
+    do:
+      "ownership changed without transfers: #{counts_text(d["before"])} → #{counts_text(d["partitions"])}"
+
+  def ring_change_text(d), do: inspect(d)
+
+  defp counts_text(counts) when is_list(counts),
+    do: Enum.map_join(counts, ", ", &"#{&1["node"]} #{&1["partitions"]}")
+
+  defp counts_text(_), do: ""
+
   defp riak_module?({name, node}) when is_atom(name) and is_atom(node), do: riak_module?(name)
 
   defp riak_module?(mod) when is_atom(mod),

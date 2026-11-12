@@ -155,11 +155,41 @@ defmodule RiakCorePlugin.Riak do
               """)
 
   @cluster_exprs parse.("""
-                 {riak_core_ring:num_partitions(R), riak_core_ring:claimant(R),
+                 {riak_core_ring:cluster_name(R),
+                  riak_core_ring:num_partitions(R), riak_core_ring:claimant(R),
                   riak_core_ring:all_member_status(R),
                   lists:foldl(fun({_, N}, D) -> orddict:update_counter(N, 1, D) end,
                               orddict:new(), riak_core_ring:all_owners(R))}
                  """)
+
+  @cluster_name_exprs parse.("riak_core_ring:cluster_name(R)")
+
+  # The history's view of the cluster (RiakCorePlugin.Collect.cluster/1).
+  @membership_exprs parse.("""
+                    {riak_core_ring:cluster_name(R), riak_core_ring:num_partitions(R),
+                     riak_core_ring:claimant(R), riak_core_ring:all_member_status(R),
+                     length(riak_core_ring:pending_changes(R)),
+                     lists:foldl(fun({_, N}, D) -> orddict:update_counter(N, 1, D) end,
+                                 orddict:new(), riak_core_ring:all_owners(R))}
+                    """)
+
+  # riak_core_handoff_manager:status/0 of each member the target sees, in
+  # one erpc:multicall/5 from the target; the ring's pending changes, whose
+  # done modules record each transfer that completed; the vnode modules.
+  @cluster_handoffs_exprs parse.("""
+                          (fun(Members) ->
+                             {riak_core_ring:cluster_name(R),
+                              lists:zip(Members,
+                                        erpc:multicall(Members, riak_core_handoff_manager,
+                                                       status, [], 4000)),
+                              riak_core_ring:pending_changes(R),
+                              case catch riak_core:vnode_modules() of
+                                L when is_list(L) -> [M || {_, M} <- L];
+                                _ -> []
+                              end}
+                           end)([N || N <- riak_core_ring:all_members(R),
+                                      lists:member(N, erlang:nodes([this, visible]))])
+                          """)
 
   # riak_core_claimant:plan/0, with each ring transition summed up on the
   # target: partitions per node before and after it, and its transfers.
@@ -389,8 +419,8 @@ defmodule RiakCorePlugin.Riak do
   end
 
   @doc """
-  What the Admin page needs: `%{size, claimant, members, counts, up,
-  candidates}`, from `riak_core_ring:num_partitions/1`, `claimant/1`,
+  What the Admin page needs: `%{name, size, claimant, members, counts, up,
+  candidates}`, from `riak_core_ring:cluster_name/1`, `num_partitions/1`, `claimant/1`,
   `all_member_status/1`, partitions per node (as in `members/1`) and
   `up_nodes/1`. `candidates` are the nodes that could join: up, not
   members, and running riak_core (its ring manager is registered there),
@@ -398,11 +428,12 @@ defmodule RiakCorePlugin.Riak do
   """
   @spec cluster(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
   def cluster(target) do
-    with {:ok, {size, claimant, members, counts}} <- eval_ring(target, @cluster_exprs),
+    with {:ok, {name, size, claimant, members, counts}} <- eval_ring(target, @cluster_exprs),
          {:ok, up} <- up_nodes(target),
          {:ok, candidates} <- riak_nodes(target, Data.join_candidates(up, members)) do
       {:ok,
        %{
+         name: name,
          size: size,
          claimant: claimant,
          members: members,
@@ -410,6 +441,62 @@ defmodule RiakCorePlugin.Riak do
          up: up,
          candidates: candidates
        }}
+    end
+  end
+
+  @doc """
+  The cluster's name, `riak_core_ring:cluster_name/1`: `{node, timestamp}`
+  of the ring the cluster started from (see `RiakCorePlugin.Data.cluster_key/1`).
+  """
+  @spec cluster_name(GenServer.server()) :: {:ok, term()} | {:error, String.t()}
+  def cluster_name(target), do: eval_ring(target, @cluster_name_exprs)
+
+  @doc """
+  What the history keeps of the cluster: `%{cluster, size, claimant,
+  members, pending, counts, up}`, from `riak_core_ring:cluster_name/1`,
+  `num_partitions/1`, `claimant/1`, `all_member_status/1`, the number of
+  `pending_changes/1`, partitions per node (`[{node, count}]`) and
+  `up_nodes/1`.
+  """
+  @spec membership(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
+  def membership(target) do
+    with {:ok, {cluster, size, claimant, members, pending, counts}} <-
+           eval_ring(target, @membership_exprs),
+         {:ok, up} <- up_nodes(target) do
+      {:ok,
+       %{
+         cluster: cluster,
+         size: size,
+         claimant: claimant,
+         members: members,
+         pending: pending,
+         counts: counts,
+         up: up
+       }}
+    end
+  end
+
+  @doc """
+  The handoffs of the whole cluster: `%{cluster, nodes, pending,
+  modules}`. `nodes` is `%{node => {:ok, status_list} | {:error, text}}`
+  for each member the target sees, from `riak_core_handoff_manager:status/0`
+  on each, asked by the target in one `erpc:multicall/5` (4 s each).
+  `pending` is `riak_core_ring:pending_changes/1`, whose entries list the
+  modules whose transfer is done, and `modules` the vnode modules
+  (`riak_core:vnode_modules/0`; `[]` when unknown).
+  """
+  @spec cluster_handoffs(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
+  def cluster_handoffs(target) do
+    with {:ok, {cluster, results, pending, modules}} <-
+           eval_ring(target, @cluster_handoffs_exprs, [], 7_000) do
+      nodes =
+        Map.new(results, fn
+          {node, {:ok, statuses}} when is_list(statuses) -> {node, {:ok, statuses}}
+          {node, {:error, {:erpc, :timeout}}} -> {node, {:error, "no answer in time"}}
+          {node, other} -> {node, {:error, Data.error_message(other)}}
+        end)
+
+      {:ok, %{cluster: cluster, nodes: nodes, pending: pending, modules: modules}}
     end
   end
 
@@ -528,8 +615,8 @@ defmodule RiakCorePlugin.Riak do
   defp claimant(fun, args), do: {:riak_core_claimant, fun, args, @admin_timeout}
 
   # `bindings` are the variables the expressions use besides `R`
-  defp eval_ring(target, exprs, bindings \\ []) do
-    case call(target, :erl_eval, :exprs, [exprs, :orddict.from_list(bindings)]) do
+  defp eval_ring(target, exprs, bindings \\ [], timeout \\ @timeout) do
+    case call(target, :erl_eval, :exprs, [exprs, :orddict.from_list(bindings)], timeout) do
       {:ok, {:value, {:ok, value}, _bindings}} -> {:ok, value}
       {:ok, {:value, {:no_ring, {:error, reason}}, _}} -> {:error, Data.error_message(reason)}
       {:ok, {:value, {:no_ring, other}, _}} -> {:error, Data.error_message(other)}
