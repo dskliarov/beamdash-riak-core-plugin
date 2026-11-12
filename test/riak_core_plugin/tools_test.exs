@@ -19,7 +19,7 @@ defmodule RiakCorePlugin.ToolsTest do
     :ok
   end
 
-  test "the plugin declares its five tools, and its collectors" do
+  test "the plugin declares its eight tools, and its collectors" do
     plugin = RiakCorePlugin.__beamdash_plugin__()
 
     assert Enum.map(plugin.mcp_tools, & &1.name) == [
@@ -27,6 +27,9 @@ defmodule RiakCorePlugin.ToolsTest do
              "members",
              "handoffs",
              "load",
+             "vnodes",
+             "handoff_stats",
+             "node",
              "history"
            ]
 
@@ -99,6 +102,7 @@ defmodule RiakCorePlugin.ToolsTest do
          direction: :outbound,
          status: :awaiting,
          start_ts: {1_700, 0, 0},
+         sender_pid: self(),
          stats: [size: {2048, :bytes}, pct_done_decimal: 0.5]
        ]}
     ])
@@ -107,7 +111,38 @@ defmodule RiakCorePlugin.ToolsTest do
     assert handoff.size == %{n: 2048, unit: :bytes}
     assert handoff.progress == 0.5
     assert handoff.from == node and handoff.to == :b@h
+    assert is_binary(handoff.sender)
     assert {:ok, _} = Jason.encode(data)
+  end
+
+  test "vnodes reports type, state and process load as JSON", %{node: node} do
+    pid = Peer.spawn_idle(node)
+    on_exit(fn -> Peer.put(node, :rcp_vnodes, []) end)
+    Peer.put(node, :rcp_vnodes, [{:a_vnode, 0, pid}])
+
+    assert {:ok, data} = Tools.vnodes(%{})
+    assert data.module == ""
+    assert data.modules == ["a_vnode"]
+    assert [%{module: "a_vnode", index: 0, type: "primary", state: "active"}] = data.vnodes
+    assert {:ok, _} = Jason.encode(data)
+  end
+
+  test "handoff_stats includes the queue and pending changes" do
+    assert {:ok, %{active: [], pending: [], waiting: [], stopped: [], down: []}} =
+             Tools.handoff_stats(%{})
+
+    assert {:ok, stats} = Tools.handoff_stats(%{})
+    assert {:ok, _} = Jason.encode(stats)
+  end
+
+  test "node returns one member and rejects unknown names", %{node: node} do
+    assert {:ok, member} = Tools.node(%{"node" => Atom.to_string(node)})
+    assert member.node == node
+    assert is_integer(member.info.run_queue)
+    assert {:ok, _} = Jason.encode(member)
+
+    assert {:error, "unknown member missing@host"} = Tools.node(%{"node" => "missing@host"})
+    assert {:error, "node is required"} = Tools.node(%{})
   end
 
   test "load samples the attached node and encodes as JSON", %{node: node} do

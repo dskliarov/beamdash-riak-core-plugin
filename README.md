@@ -201,7 +201,10 @@ the same data as the Ring, Members, Handoffs and Load pages, as JSON, except
 that `riak_core.ring` leaves out the fallback nodes (the Ring page's Fallback
 column): finding them takes one more rpc. `riak_core.load` takes a 1-second
 sample when it is called, as the Load page does, so its rates are for that
-second. `riak_core.history` returns the cluster's history of one `kind`
+second. `riak_core.vnodes` returns expected/running vnode type and state
+(optionally for one `module`); `riak_core.handoff_stats` adds handoff
+throughput, ETA and the waiting/stopped queue; `riak_core.node` returns one
+member's services, versions and system pressure. `riak_core.history` returns the cluster's history of one `kind`
 (`handoffs`, `members`, `ring`, `load` or `admin`) over the last `minutes`
 (1440 by default), newest first, at most `limit` rows (50 by default, at
 most 500). Cluster changes (join, leave, commit) are not offered.

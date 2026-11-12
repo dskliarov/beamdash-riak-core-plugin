@@ -32,6 +32,21 @@ defmodule RiakCorePlugin do
       {"load",
        "Scheduler busy share, I/O per second, memory and the busiest processes, over a 1 s sample",
        %{type: "object", properties: %{}}, {RiakCorePlugin.Tools, :load}},
+      {"vnodes",
+       "Expected and running vnodes with type, forwarding/handoff state and process load",
+       %{
+         type: "object",
+         properties: %{module: %{type: "string", description: "Vnode module (default all)"}}
+       }, {RiakCorePlugin.Tools, :vnodes}},
+      {"handoff_stats",
+       "Active handoffs with throughput and ETA, plus waiting/stopped queue and pending changes",
+       %{type: "object", properties: %{}}, {RiakCorePlugin.Tools, :handoff_stats}},
+      {"node", "One member with partitions, services, versions and system pressure",
+       %{
+         type: "object",
+         properties: %{node: %{type: "string", description: "Member node name"}},
+         required: ["node"]
+       }, {RiakCorePlugin.Tools, :node}},
       {"history",
        "The cluster's history: ended handoffs, member and ring changes, load samples or Admin actions",
        %{
