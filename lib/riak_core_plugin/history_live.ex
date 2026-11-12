@@ -260,8 +260,6 @@ defmodule RiakCorePlugin.HistoryLive do
     end
   end
 
-  defp bar_width([], _w), do: 0
-
   defp bar_width(bars, w),
     do: Float.round(max(w / max(length(bars), 1) * 0.8, 1), 1)
 
