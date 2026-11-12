@@ -19,7 +19,7 @@ defmodule RiakCorePlugin.ToolsTest do
     :ok
   end
 
-  test "the plugin declares its eight tools, and its collectors" do
+  test "the plugin declares its nine tools, and its collectors" do
     plugin = RiakCorePlugin.__beamdash_plugin__()
 
     assert Enum.map(plugin.mcp_tools, & &1.name) == [
@@ -27,6 +27,7 @@ defmodule RiakCorePlugin.ToolsTest do
              "members",
              "handoffs",
              "load",
+             "health",
              "vnodes",
              "handoff_stats",
              "node",
@@ -113,6 +114,14 @@ defmodule RiakCorePlugin.ToolsTest do
     assert handoff.from == node and handoff.to == :b@h
     assert is_binary(handoff.sender)
     assert {:ok, _} = Jason.encode(data)
+  end
+
+  test "health summarises readiness and coverage as JSON", %{node: node} do
+    assert {:ok, health} = Tools.health(%{})
+    assert health.claimant == node
+    assert %{ok: true, text: "ready (1 node)"} = health.ring_ready
+    assert health.coverage.under_count == 8
+    assert {:ok, _} = Jason.encode(health)
   end
 
   test "vnodes reports type, state and process load as JSON", %{node: node} do

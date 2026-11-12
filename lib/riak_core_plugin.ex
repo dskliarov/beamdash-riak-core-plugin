@@ -32,6 +32,9 @@ defmodule RiakCorePlugin do
       {"load",
        "Scheduler busy share, I/O per second, memory and the busiest processes, over a 1 s sample",
        %{type: "object", properties: %{}}, {RiakCorePlugin.Tools, :load}},
+      {"health",
+       "Ring readiness, claimant, down members, pending changes, handoff queue and replica coverage",
+       %{type: "object", properties: %{}}, {RiakCorePlugin.Tools, :health}},
       {"vnodes",
        "Expected and running vnodes with type, forwarding/handoff state and process load",
        %{

@@ -1,8 +1,8 @@
 defmodule RiakCorePlugin.Tools do
   @moduledoc """
   The MCP tools of the riak_core plugin: read-only views of the attached
-  node's ring, members, handoffs, load and vnodes, one node's detail, and
-  the cluster's history. Cluster changes are not offered. Each
+  node's ring, members, handoffs, load, health and vnodes, one node's detail,
+  and the cluster's history. Cluster changes are not offered. Each
   tool returns `{:ok, data}` or `{:error, message}`, with data made of maps
   and lists that encode as JSON.
   """
@@ -45,6 +45,45 @@ defmodule RiakCorePlugin.Tools do
        %{
          active: handoffs.active |> Data.handoff_rows() |> Enum.map(&json_handoff/1),
          pending: Data.pending_rows(handoffs.pending)
+       }}
+    end
+  end
+
+  @doc """
+  A bounded health summary: readiness, claimant, down members, pending
+  changes, handoff queue and replica coverage. `ringready/0` is given a
+  4 s caller timeout, so a slow member shows as an error instead of
+  outliving the tool.
+  """
+  def health(_args) do
+    with {:ok, ring} <- Riak.ring(Beamdash.Target, fallbacks: false),
+         {:ok, {_down, transfers}} <- Riak.transfers(Beamdash.Target),
+         {:ok, coverage} <- Riak.coverage(Beamdash.Target) do
+      ready =
+        case Riak.ring_ready(Beamdash.Target, 4_000) do
+          {:ok, {:ok, text}} -> %{ok: true, text: text}
+          {:ok, {:error, text}} -> %{ok: false, text: text}
+          {:error, message} -> %{ok: false, text: message}
+        end
+
+      {:ok,
+       %{
+         ring_ready: ready,
+         claimant: ring.claimant,
+         down: Data.down_owners(ring),
+         pending: length(ring.pending),
+         waiting:
+           for({:waiting_to_handoff, node, n} <- transfers, do: %{node: node, partitions: n}),
+         stopped: for({:stopped, node, n} <- transfers, do: %{node: node, partitions: n}),
+         coverage: %{
+           partitions: coverage.partitions,
+           n_val: coverage.n_val,
+           under_count: coverage.under_count,
+           under: for({index, nodes} <- coverage.under, do: %{partition: index, nodes: nodes}),
+           replica_load:
+             for({node, count} <- coverage.replica_load, do: %{node: node, replicas: count}),
+           up: coverage.up
+         }
        }}
     end
   end
