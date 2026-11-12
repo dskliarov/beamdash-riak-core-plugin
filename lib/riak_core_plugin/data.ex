@@ -663,6 +663,7 @@ defmodule RiakCorePlugin.Data do
     %{
       pid: pid,
       name: process_name(info),
+      module: process_module(info),
       mailbox: if(is_list(info), do: info[:message_queue_len]),
       reductions_per_s: per_second(reductions, ms)
     }
@@ -677,6 +678,17 @@ defmodule RiakCorePlugin.Data do
       _ -> nil
     end
   end
+
+  # The module of the initial call, when that is what names the process.
+  defp process_module(info) when is_list(info) do
+    case {info[:registered_name], info[:initial_call]} do
+      {name, _} when is_atom(name) -> nil
+      {_, {m, _f, _a}} when is_atom(m) -> m
+      _ -> nil
+    end
+  end
+
+  defp process_module(_info), do: nil
 
   defp per_second(n, ms), do: if(ms > 0, do: round(n * 1000 / ms), else: 0)
 

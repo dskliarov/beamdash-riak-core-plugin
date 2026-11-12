@@ -102,7 +102,7 @@ defmodule RiakCorePlugin.VnodesLive do
           </thead>
           <tbody>
             <tr :for={row <- Data.vnode_rows(vnodes.fetched, @sort)}>
-              <td>{row.module}</td>
+              <td><.module_link module={row.module} /></td>
               <td class="rcp-num rcp-mono">{row.index}</td>
               <td class="rcp-mono">
                 <.link

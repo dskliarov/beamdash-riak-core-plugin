@@ -103,7 +103,7 @@ defmodule RiakCorePlugin.HistoryLive do
         <tr :for={row <- @rows}>
           <td class="rcp-nowrap">{row.at}</td>
           <td>{row.type}</td>
-          <td>{row.module}</td>
+          <td><.module_link module={row.module} /></td>
           <td class="rcp-mono">{row.partition}</td>
           <td>{row.from} → {row.to}</td>
           <td>{row.took}</td>

@@ -63,8 +63,22 @@ defmodule RiakCorePlugin.DataTest do
                view.memory
 
       assert [busy, exited] = view.processes
-      assert busy == %{pid: pid1(), name: ":gen_server.loop/7", mailbox: 3, reductions_per_s: 500}
-      assert exited == %{pid: pid2(), name: "exited", mailbox: nil, reductions_per_s: 10}
+
+      assert busy == %{
+               pid: pid1(),
+               name: ":gen_server.loop/7",
+               module: :gen_server,
+               mailbox: 3,
+               reductions_per_s: 500
+             }
+
+      assert exited == %{
+               pid: pid2(),
+               name: "exited",
+               module: nil,
+               mailbox: nil,
+               reductions_per_s: 10
+             }
     end
   end
 

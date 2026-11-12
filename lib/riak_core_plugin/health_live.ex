@@ -83,13 +83,21 @@ defmodule RiakCorePlugin.HealthLive do
           <table class="rcp-table">
             <thead>
               <tr>
-                <th class="rcp-num">Partition</th><th>Up replicas</th>
+                <th class="rcp-num">Partition</th><th class="rcp-num">Up</th><th>Up replicas</th>
               </tr>
             </thead>
             <tbody>
               <tr :for={{index, nodes} <- health.coverage.under}>
                 <td class="rcp-mono">{index}</td>
-                <td>{Enum.join(nodes, ", ")}</td>
+                <td class="rcp-num rcp-bad">{length(nodes)} of {health.coverage.n_val}</td>
+                <td>
+                  <span :if={nodes == []} class="rcp-bad">none</span>
+                  <ul :if={nodes != []} class="rcp-node-list">
+                    <li :for={node <- nodes}>
+                      <.node_link node={node} attached={@node} return={page_path(assigns, "health")} />
+                    </li>
+                  </ul>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -149,8 +157,8 @@ defmodule RiakCorePlugin.HealthLive do
                 />
               </td>
               <td class="rcp-mono">{transfer.index}</td>
-              <td>{modules(transfer.waiting_modules)}</td>
-              <td>{modules(transfer.done_modules)}</td>
+              <td><.modules list={transfer.waiting_modules} /></td>
+              <td><.modules list={transfer.done_modules} /></td>
               <td>{inspect(transfer.status)}</td>
             </tr>
           </tbody>
@@ -165,9 +173,11 @@ defmodule RiakCorePlugin.HealthLive do
   defp ready_text(:undefined), do: "unknown"
   defp ready_text(other), do: inspect(other)
 
-  defp modules(:down), do: "down"
-  defp modules(list) when is_list(list), do: Enum.map_join(list, ", ", &name/1)
-  defp modules(other), do: inspect(other)
+  defp modules(%{list: list} = assigns) when is_list(list),
+    do: ~H"<.module_links modules={@list} />"
+
+  defp modules(%{list: :down} = assigns), do: ~H"down"
+  defp modules(assigns), do: ~H"{inspect(@list)}"
 
   defp load_health(%{beamdash_target: target}), do: fn -> Riak.health(target) end
 end

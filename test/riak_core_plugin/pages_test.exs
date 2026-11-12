@@ -18,7 +18,15 @@ defmodule RiakCorePlugin.PagesTest do
   defp pid, do: :c.pid(0, 101, 0)
 
   defp render(module, assigns) do
-    %{__changed__: nil, node: :a@h, syntax: :erlang, note: nil, busy: false, confirm: nil}
+    %{
+      __changed__: nil,
+      node: :a@h,
+      syntax: :erlang,
+      note: nil,
+      note_at: nil,
+      busy: false,
+      confirm: nil
+    }
     |> Map.merge(assigns)
     |> module.render()
     |> rendered_to_string()
@@ -199,6 +207,115 @@ defmodule RiakCorePlugin.PagesTest do
     assert html =~ "N = 4"
     assert html =~ "No waiting or stopped partitions."
     assert html =~ "Nothing is transferring."
+  end
+
+  describe "modules link to beamdash's Modules tab" do
+    defp module_href(name), do: ~s(href="/modules?module=#{URI.encode_www_form(name)}")
+
+    test "module_path: atoms and stored names; nothing for what isn't a module" do
+      import RiakCorePlugin.Components, only: [module_path: 1]
+      assert module_path(:kv_vnode) == "/modules?module=kv_vnode"
+      assert module_path(MyApp.Vnode) == "/modules?module=Elixir.MyApp.Vnode"
+      assert module_path("Elixir.MyApp.Vnode") == "/modules?module=Elixir.MyApp.Vnode"
+
+      for not_one <- [nil, :undefined, true, "", 3],
+          do: assert(module_path(not_one) == nil)
+    end
+
+    test "vnodes, handoffs and the pending changes' modules" do
+      fetched = [
+        %{
+          module: MyApp.Vnode,
+          index: 0,
+          pid: pid(),
+          type: :primary,
+          forwarding: nil,
+          should_handoff: nil,
+          info: [message_queue_len: 0, memory: 0, reductions: 0]
+        }
+      ]
+
+      html =
+        render(VnodesLive, %{
+          vnodes: {:ok, %{fetched: fetched, total: 1, modules: [MyApp.Vnode], module: ""}},
+          sort: {:mailbox, :desc},
+          module: ""
+        })
+
+      assert html =~ ~s(<a #{module_href("Elixir.MyApp.Vnode")})
+
+      handoff =
+        {:status_v2,
+         [
+           mod: :kv_vnode,
+           src_partition: 0,
+           target_partition: 0,
+           src_node: :a@h,
+           target_node: :b@h
+         ]}
+
+      html =
+        render(HandoffsLive, %{
+          handoffs:
+            {:ok,
+             %{
+               active: [handoff],
+               pending: [{1, :a@h, :b@h, [:kv_vnode, :x_vnode], :awaiting}],
+               settings: %{concurrency: 2, inbound: true, outbound: true, cluster: "c"}
+             }},
+          busy: false,
+          note: nil,
+          confirm: nil
+        })
+
+      assert html =~ module_href("kv_vnode")
+      assert html =~ module_href("x_vnode")
+    end
+
+    test "health's waiting and done modules; history's handoff module; load's initial call" do
+      transfer = %{
+        owner: :a@h,
+        next: :b@h,
+        index: 0,
+        waiting_modules: [:x_vnode],
+        done_modules: [:kv_vnode],
+        status: :awaiting
+      }
+
+      html =
+        render(HealthLive, %{
+          health: {:ok, %{@health | transfer_status: [transfer], transfers: [transfer]}}
+        })
+
+      assert html =~ module_href("x_vnode")
+      assert html =~ module_href("kv_vnode")
+
+      rows =
+        RiakCorePlugin.Data.history_rows("handoffs", [
+          %{at: 0, data: %{"module" => "Elixir.MyApp.Vnode", "src_partition" => 0}}
+        ])
+
+      html =
+        render(HistoryLive, %{
+          kind: "handoffs",
+          history: {:ok, %{kind: "handoffs", cluster: "c", rows: rows}}
+        })
+
+      assert html =~ module_href("Elixir.MyApp.Vnode")
+    end
+  end
+
+  test "health: the up replicas of an under-replicated partition are a list of node links" do
+    coverage = %{@health.coverage | under_count: 2, under: [{0, [:a@h, :b@h]}, {1, []}]}
+    html = render(HealthLive, %{health: {:ok, %{@health | coverage: coverage}}})
+
+    assert html =~ ~r/2 of 4/
+    assert html =~ ~r/0 of 4/
+    assert [list] = Regex.run(~r/<ul class="rcp-node-list">.*?<\/ul>/s, html)
+    # a@h is the attached node (plain text), b@h a link that switches beamdash to it
+    assert list =~ ~r/<li>\s*<span>a@h<\/span>/
+    assert list =~ ~r/<li>\s*<a[^>]*class="rcp-node"[^>]*>b@h<\/a>/
+    assert html =~ ~s(<span class="rcp-bad">none</span>)
   end
 
   test "ring" do
@@ -555,8 +672,10 @@ defmodule RiakCorePlugin.PagesTest do
     assert html =~ "1: 75.0%"
     assert html =~ "2.0 KB/s"
     assert html =~ "4.0 KB"
+    # the initial call's module links to the Modules tab; an exited process doesn't
+    assert html =~ ~s(<a href="/modules?module=gen_server")
     assert html =~ ":gen_server.loop/7"
-    assert html =~ "exited"
+    assert html =~ ~r/<span>exited<\/span>/
     assert html =~ "rcp-bar-fill"
 
     assert render(LoadLive, %{load: {:error, "riak_core is not running"}}) =~

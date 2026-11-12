@@ -43,6 +43,10 @@ beamdash's Nodes tab, and comes back to the same page
 (`Beamdash.Plugin.switch_path/2`). The node must be connected to the
 attached one; otherwise the Nodes tab says why it couldn't switch.
 
+Module names (vnode modules, handoff and transfer modules, a process's
+initial call on the Load page) are links too: clicking one opens it on
+beamdash's Modules tab, when it is loaded on the attached node.
+
 - **Health**: ring readiness, claimant, down and marked-down members,
   under-replicated partitions (N replicas among the up nodes), the handoff
   queue and pending transfers, with the warnings worth acting on. It loads

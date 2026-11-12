@@ -218,7 +218,7 @@ defmodule RiakCorePlugin.HandoffsLive do
               <tr :for={row <- Data.handoff_rows(handoffs.active)}>
                 <%= if row.known do %>
                   <td>{name(row.type)}</td>
-                  <td>{name(row.module)}</td>
+                  <td><.module_link module={row.module} /></td>
                   <td class="rcp-mono">{partitions(row)}</td>
                   <td>
                     <.node_link
@@ -272,7 +272,7 @@ defmodule RiakCorePlugin.HandoffsLive do
                     return={page_path(assigns, "handoffs")}
                   />
                 </td>
-                <td>{Enum.map_join(row.modules, ", ", &name/1)}</td>
+                <td><.module_links modules={row.modules} /></td>
                 <td>{name(row.status)}</td>
               </tr>
             </tbody>

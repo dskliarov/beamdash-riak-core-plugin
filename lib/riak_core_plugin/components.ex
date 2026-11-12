@@ -144,6 +144,51 @@ defmodule RiakCorePlugin.Components do
     """
   end
 
+  @doc """
+  The path of beamdash's Modules tab with `module` selected: a module atom,
+  or its name as the history stores it (`"kv_vnode"`, `"Elixir.Foo"`). `nil`
+  for anything else. The tab opens it when it is loaded on the attached node.
+  """
+  def module_path(module) do
+    case module_name(module) do
+      nil -> nil
+      name -> "/modules?" <> URI.encode_query(%{module: name})
+    end
+  end
+
+  defp module_name(mod) when is_atom(mod) and mod not in [nil, true, false, :undefined],
+    do: Atom.to_string(mod)
+
+  defp module_name(name) when is_binary(name) and name != "", do: name
+  defp module_name(_), do: nil
+
+  attr :module, :any, required: true, doc: "a module atom or name (see `module_path/1`)"
+  attr :text, :string, default: nil, doc: "the text; the module's name by default"
+
+  @doc "A module, linked to beamdash's Modules tab (`module_path/1`)."
+  def module_link(assigns) do
+    assigns =
+      assign(assigns,
+        path: module_path(assigns.module),
+        text: assigns.text || name(assigns.module)
+      )
+
+    ~H"""
+    <.link :if={@path} navigate={@path} class="rcp-module">{@text}</.link><span :if={!@path}>{@text}</span>
+    """
+  end
+
+  attr :modules, :list, required: true
+
+  @doc "Modules, each linked (`module_link/1`), separated by commas."
+  def module_links(assigns) do
+    ~H"""
+    <%= for {mod, i} <- Enum.with_index(@modules) do %>
+      {if i > 0, do: ", "}<.module_link module={mod} />
+    <% end %>
+    """
+  end
+
   @doc "The path of this plugin's page `slug`, for `node_link/1`'s `return`."
   def page_path(%{plugin: %{app: app}}, slug) when app != nil, do: "/plugins/#{app}/#{slug}"
   def page_path(_assigns, _slug), do: nil
