@@ -602,8 +602,16 @@ defmodule RiakCorePlugin.Riak do
         handoff_call(target, :riak_core_handoff_manager, :kill_handoffs_in_direction, [direction])
 
   def handoff_action(target, {:pause, direction}) when direction in [:inbound, :outbound] do
-    with :ok <- handoff_action(target, {:direction, :disable, direction}),
-         do: handoff_action(target, {:kill_direction, direction})
+    with :ok <- handoff_action(target, {:direction, :disable, direction}) do
+      case handoff_action(target, {:kill_direction, direction}) do
+        :ok ->
+          :ok
+
+        {:error, message} ->
+          {:error,
+           "#{direction} handoffs are disabled, but killing the running ones failed: #{message}"}
+      end
+    end
   end
 
   def handoff_action(target, :kill_all),
