@@ -114,9 +114,12 @@ attached one; otherwise the Nodes tab says why it couldn't switch.
   (`riak_core_ring:pending_changes/1`). It shows "No handoffs" when both are
   empty. It shows the handoff concurrency limit and whether inbound/outbound
   handoffs are enabled, and can set the limit, pause/resume a direction,
-  kill all handoffs, force handoffs or refresh the local ring. Pausing,
-  killing and setting the limit to zero ask for confirmation; each action
-  is kept in the history.
+  kill all handoffs or force handoffs. Pausing, killing, forcing and
+  setting the limit to zero ask for confirmation; each action is kept in
+  the history as what was done. There is no "refresh ring":
+  `riak_core_ring_manager:refresh_my_ring/0` is the last step of a node
+  leaving, and gives the node a fresh ring of its own, so it drops out of
+  its cluster.
 - **History**: what the plugin has kept of the attached node's cluster
   (see [History](#history)), one kind at a time, newest first, with a tab
   for each: **Handoffs** (each completed handoff: type, module,

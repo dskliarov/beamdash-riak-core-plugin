@@ -132,6 +132,22 @@ defmodule RiakCorePlugin.PageCallbacksTest do
     assert loading(socket) == []
   end
 
+  test "handoffs: no Refresh ring; a confirmed action shows what was done, not the question",
+       %{target: target, node: node} do
+    socket = HandoffsLive |> mount(target) |> await(:handoffs)
+    html = render(socket)
+    refute html =~ "refresh_ring"
+    refute html =~ "Refresh ring"
+
+    socket = event(socket, "force", %{})
+    assert render(socket) =~ "Force every running vnode to start handoff?"
+    refute :action in loading(socket)
+
+    socket = socket |> event("confirm", %{}) |> await(:action)
+    assert render(socket) =~ "Forced every running vnode to start handoff"
+    assert {:riak_core_vnode_manager, :force_handoffs} in Peer.calls(node)
+  end
+
   test "reconnecting keeps one timer per load", %{target: target, node: node} do
     socket = HandoffsLive |> mount(target) |> await(:handoffs)
     %{handoffs: {_, old}} = timers(socket)

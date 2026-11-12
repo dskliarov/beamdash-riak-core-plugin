@@ -171,7 +171,6 @@ defmodule RiakCorePlugin.RiakTest do
     assert :ok = Riak.handoff_action(target, {:kill_direction, :outbound})
     assert :ok = Riak.handoff_action(target, :kill_all)
     assert :ok = Riak.handoff_action(target, :force)
-    assert :ok = Riak.handoff_action(target, :refresh_ring)
 
     calls = Peer.calls(node)
     assert {:riak_core_handoff_manager, {:set_concurrency, [3]}} in calls
@@ -181,7 +180,6 @@ defmodule RiakCorePlugin.RiakTest do
     assert {:riak_core_handoff_manager, {:kill_handoffs_in_direction, [:outbound]}} in calls
     assert {:riak_core_handoff_manager, {:kill_handoffs, []}} in calls
     assert {:riak_core_vnode_manager, :force_handoffs} in calls
-    assert {:riak_core_ring_manager, :refresh_my_ring} in calls
   end
 
   test "ring_ready/2: the result as text, a timeout as readable text", %{node: node} do

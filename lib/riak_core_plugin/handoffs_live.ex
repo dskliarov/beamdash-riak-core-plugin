@@ -48,7 +48,9 @@ defmodule RiakCorePlugin.HandoffsLive do
         label = "Handoff concurrency set to #{n}"
 
         if n == 0,
-          do: {:noreply, ask(socket, action, "Set concurrency to 0? This stops all handoffs.")},
+          do:
+            {:noreply,
+             ask(socket, action, "Set concurrency to 0? This stops all handoffs.", label)},
           else: {:noreply, run(socket, action, label)}
 
       _ ->
@@ -62,7 +64,8 @@ defmodule RiakCorePlugin.HandoffsLive do
        ask(
          socket,
          {:direction, :disable, direction},
-         "Pause #{direction} handoffs? Their active transfers are killed."
+         "Pause #{direction} handoffs? Their active transfers are killed.",
+         "Paused #{direction} handoffs"
        )}
     else
       :error -> {:noreply, socket}
@@ -78,16 +81,27 @@ defmodule RiakCorePlugin.HandoffsLive do
   end
 
   def handle_event("kill_all", _params, socket),
-    do: {:noreply, ask(socket, :kill_all, "Kill all active handoffs?")}
+    do:
+      {:noreply,
+       ask(socket, :kill_all, "Kill all active handoffs?", "Killed all active handoffs")}
 
   def handle_event("force", _params, socket),
-    do: {:noreply, ask(socket, :force, "Force every running vnode to start handoff?")}
+    do:
+      {:noreply,
+       ask(
+         socket,
+         :force,
+         "Force every running vnode to start handoff?",
+         "Forced every running vnode to start handoff"
+       )}
 
-  def handle_event("refresh_ring", _params, socket),
-    do: {:noreply, run(socket, :refresh_ring, "Asked the node to refresh its ring")}
-
-  def handle_event("confirm", _params, %{assigns: %{confirm: {action, text}}} = socket),
-    do: {:noreply, socket |> assign(confirm: nil) |> run(action, text)}
+  # What was done (`done`), not the question asked, is shown and recorded.
+  def handle_event(
+        "confirm",
+        _params,
+        %{assigns: %{confirm: {action, _question, done}}} = socket
+      ),
+      do: {:noreply, socket |> assign(confirm: nil) |> run(action, done)}
 
   def handle_event("cancel", _params, socket), do: {:noreply, assign(socket, confirm: nil)}
   def handle_event(_event, _params, socket), do: {:noreply, socket}
@@ -176,9 +190,6 @@ defmodule RiakCorePlugin.HandoffsLive do
           </button>
           <button type="button" class="secondary" phx-click="force" disabled={@busy}>
             Force handoffs
-          </button>
-          <button type="button" class="secondary" phx-click="refresh_ring" disabled={@busy}>
-            Refresh ring
           </button>
         </div>
 
@@ -312,7 +323,8 @@ defmodule RiakCorePlugin.HandoffsLive do
   defp direction("outbound"), do: {:ok, :outbound}
   defp direction(_), do: :error
 
-  defp ask(socket, action, text), do: assign(socket, confirm: {action, text}, note: nil)
+  defp ask(socket, action, question, done),
+    do: assign(socket, confirm: {action, question, done}, note: nil)
 
   defp run(%{assigns: %{busy: true}} = socket, _action, _text), do: socket
 

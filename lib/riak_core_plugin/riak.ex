@@ -574,8 +574,12 @@ defmodule RiakCorePlugin.Riak do
   @doc """
   Runs a handoff control on the attached node: `{:concurrency, n}`,
   `{:direction, :enable | :disable, :inbound | :outbound | :both}`,
-  `{:kill_direction, direction}`, `:kill_all`, `:force` (force all running
-  vnodes to start handoff) or `:refresh_ring`.
+  `{:kill_direction, direction}`, `:kill_all` or `:force` (force all
+  running vnodes to start handoff).
+
+  `riak_core_ring_manager:refresh_my_ring/0` is deliberately not offered:
+  it is the last step of a node leaving, and replaces the node's ring with a
+  fresh one of its own (persisted), so the node drops out of its cluster.
   """
   @spec handoff_action(GenServer.server(), term()) :: :ok | {:error, String.t()}
   def handoff_action(target, {:concurrency, n}) when is_integer(n) and n >= 0,
@@ -599,9 +603,6 @@ defmodule RiakCorePlugin.Riak do
 
   def handoff_action(target, :force),
     do: handoff_call(target, :riak_core_vnode_manager, :force_handoffs, [])
-
-  def handoff_action(target, :refresh_ring),
-    do: handoff_call(target, :riak_core_ring_manager, :refresh_my_ring, [])
 
   defp handoff_call(target, mod, fun, args) do
     case call(target, mod, fun, args) do
