@@ -150,12 +150,13 @@ defmodule RiakCorePlugin.Components do
 
   attr :title, :string, required: true
   attr :node, :atom, default: nil
+  attr :refresh, :string, default: "refreshes every 5 s"
 
   def header(assigns) do
     ~H"""
     <header class="rcp-header">
       <h2>riak_core: {@title}</h2>
-      <span :if={@node} class="rcp-muted">{@node} · refreshes every 5 s</span>
+      <span :if={@node} class="rcp-muted">{@node} · {@refresh}</span>
     </header>
     """
   end

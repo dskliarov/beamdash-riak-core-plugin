@@ -240,7 +240,7 @@ defmodule RiakCorePlugin.AdminLive do
   def render(assigns) do
     ~H"""
     <div class="rcp-page">
-      <.header title="Admin" node={@node} />
+      <.header title="Admin" node={@node} refresh="refreshes every 5 s; plan every 10 s" />
       <p
         :if={@note}
         class={["rcp-note-line", if(elem(@note, 0) == :ok, do: "rcp-ok", else: "rcp-error")]}

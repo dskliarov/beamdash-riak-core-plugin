@@ -97,7 +97,11 @@ defmodule RiakCorePlugin.History do
   """
   @spec record_admin(String.t() | nil, node(), String.t(), term(), list()) ::
           :ok | {:error, term()}
-  def record_admin(key, node, text, result, changes \\ []) do
+  def record_admin(key, node, text, result, changes \\ [])
+
+  def record_admin(nil, _node, _text, _result, _changes), do: :ok
+
+  def record_admin(key, node, text, result, changes) do
     error = with {:error, message} <- result, do: message, else: (_ -> nil)
 
     data = %{

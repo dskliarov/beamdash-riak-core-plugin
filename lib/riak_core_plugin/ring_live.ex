@@ -82,7 +82,7 @@ defmodule RiakCorePlugin.RingLive do
   def render(assigns) do
     ~H"""
     <div class="rcp-page">
-      <.header title="Ring" node={@node} />
+      <.header title="Ring" node={@node} refresh="refreshes every 5 s; ring readiness every 30 s" />
       <.result :let={ring} node={@node} result={@ring}>
         <div class="rcp-cards">
           <.card label="Ring size" value={"#{ring.size} partitions"} />

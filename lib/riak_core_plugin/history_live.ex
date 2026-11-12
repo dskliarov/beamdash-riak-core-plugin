@@ -45,7 +45,7 @@ defmodule RiakCorePlugin.HistoryLive do
   def render(assigns) do
     ~H"""
     <div class="rcp-page">
-      <.header title="History" node={@node} />
+      <.header title="History" node={@node} refresh="refreshes every 10 s" />
 
       <div class="rcp-tabs" role="tablist" aria-label="History">
         <button
