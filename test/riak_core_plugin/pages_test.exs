@@ -107,6 +107,7 @@ defmodule RiakCorePlugin.PagesTest do
       assert html =~ "2025-10-25 13:46:40 UTC"
       assert html =~ "a@h → b@h"
       assert html =~ "5s"
+      assert html =~ ~s(aria-label="Completed handoffs over time")
 
       admin =
         RiakCorePlugin.Data.history_rows("admin", [

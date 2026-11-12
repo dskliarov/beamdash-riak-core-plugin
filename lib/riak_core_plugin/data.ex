@@ -1046,6 +1046,7 @@ defmodule RiakCorePlugin.Data do
   defp history_row("handoffs", %{data: d} = row) do
     %{
       at: time_text(row.at),
+      at_ms: row.at,
       type: d["type"],
       module: d["module"],
       partition:

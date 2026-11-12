@@ -283,9 +283,13 @@ defmodule RiakCorePlugin.Riak do
            stable, tainted_meta, lastgasp, resizing, future_size,
            resize_complete}} <-
            eval_ring(target, @ring_exprs),
-         {:ok, up} <- up_nodes(target),
-         {:ok, fallbacks} <-
-           fallbacks(target, owners, up, n_val, Keyword.get(opts, :fallbacks, true)) do
+         {:ok, up} <- up_nodes(target) do
+      {fallbacks, fallback_error} =
+        case fallbacks(target, owners, up, n_val, Keyword.get(opts, :fallbacks, true)) do
+          {:ok, value} -> {value, nil}
+          {:error, message} -> {nil, message}
+        end
+
       {:ok,
        %{
          size: size,
@@ -296,6 +300,7 @@ defmodule RiakCorePlugin.Riak do
          n_val: n_val,
          up: up,
          fallbacks: fallbacks,
+         fallback_error: fallback_error,
          cluster_name: cluster_name,
          ring_version: ring_version,
          ring_id: ring_id,

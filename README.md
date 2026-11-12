@@ -120,7 +120,8 @@ attached one; otherwise the Nodes tab says why it couldn't switch.
 - **History**: what the plugin has kept of the attached node's cluster
   (see [History](#history)), one kind at a time, newest first, with a tab
   for each: **Handoffs** (each completed handoff: type, module,
-  partition, from → to, how long it took, its size when known), **Members**
+  partition, from → to, how long it took, its size when known, with a
+  completions-over-time chart), **Members**
   (status changes, a member going down or coming back up, joins and
   removals), **Ring** (claimant and ring size changes, partition transfers
   starting and finishing, ownership changing without transfers), **Load**

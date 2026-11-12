@@ -84,12 +84,13 @@ defmodule RiakCorePlugin.RingLive do
     <div class="rcp-page">
       <.header title="Ring" node={@node} refresh="refreshes every 5 s; ring readiness every 30 s" />
       <.result :let={ring} node={@node} result={@ring}>
+        <% down = MapSet.new(Data.down_owners(ring)) %>
         <div class="rcp-cards">
           <.card label="Ring size" value={"#{ring.size} partitions"} />
           <.card
             label="Claimant"
-            value={name(ring.claimant) <> if(down?(ring, ring.claimant), do: " (down)", else: "")}
-            class={down?(ring, ring.claimant) && "rcp-bad"}
+            value={name(ring.claimant) <> if(down?(down, ring, ring.claimant), do: " (down)", else: "")}
+            class={down?(down, ring, ring.claimant) && "rcp-bad"}
           />
           <.card
             label="Ring ready"
@@ -107,6 +108,9 @@ defmodule RiakCorePlugin.RingLive do
           <span :if={ring[:lastgasp]} class="rcp-bad">last gasp</span>
           <span :if={ring[:resizing]}>resizing to <strong>{ring.future_size}</strong> partitions</span>
         </div>
+        <p :if={ring[:fallback_error]} class="rcp-error">
+          Fallback lookup failed: {ring.fallback_error}. Ownership and pending changes are still shown.
+        </p>
         <.claimant_note note={Data.claimant_note(ring.claimant, ring.members, ring[:up])} />
 
         <div :if={Data.down_owners(ring) != []} class="rcp-down-note" role="status">
@@ -160,7 +164,7 @@ defmodule RiakCorePlugin.RingLive do
                     return={page_path(assigns, "ring")}
                     claimant={node == ring.claimant}
                   />
-                  <span :if={down?(ring, node)} class="rcp-down">down</span>
+                  <span :if={down?(down, ring, node)} class="rcp-down">down</span>
                 </td>
                 <td class="rcp-num">{count}</td>
               </tr>
@@ -229,7 +233,7 @@ defmodule RiakCorePlugin.RingLive do
                     return={page_path(assigns, "ring")}
                     claimant={row.owner == ring.claimant}
                   />
-                  <span :if={down?(ring, row.owner)} class="rcp-down">down</span>
+                  <span :if={down?(down, ring, row.owner)} class="rcp-down">down</span>
                 </td>
                 <td class={row.next && "rcp-pending"}>
                   <.node_link
@@ -444,7 +448,7 @@ defmodule RiakCorePlugin.RingLive do
       end
   end
 
-  defp down?(ring, node), do: node in Data.down_owners(ring) or down_claimant?(ring, node)
+  defp down?(down, ring, node), do: MapSet.member?(down, node) or down_claimant?(ring, node)
 
   # the claimant may own nothing (a fresh member)
   defp down_claimant?(%{claimant: node, up: up}, node) when is_list(up) and node != :undefined,

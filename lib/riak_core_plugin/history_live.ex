@@ -91,6 +91,7 @@ defmodule RiakCorePlugin.HistoryLive do
 
   defp rows(%{kind: "handoffs"} = assigns) do
     ~H"""
+    <.handoff_chart rows={@rows} />
     <table class="rcp-table">
       <thead>
         <tr>
@@ -203,6 +204,66 @@ defmodule RiakCorePlugin.HistoryLive do
 
   @chart_w 600
   @chart_h 120
+
+  attr :rows, :list, required: true
+
+  defp handoff_chart(assigns) do
+    times =
+      assigns.rows
+      |> Enum.reverse()
+      |> Enum.map(& &1.at_ms)
+      |> Enum.filter(&is_integer/1)
+
+    assigns =
+      assign(assigns, bars: handoff_bars(times, @chart_w, @chart_h), w: @chart_w, h: @chart_h)
+
+    ~H"""
+    <figure :if={@bars != []} class="rcp-history-chart">
+      <svg
+        viewBox={"0 0 #{@w} #{@h}"}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label="Completed handoffs over time"
+      >
+        <line x1="0" y1={@h} x2={@w} y2={@h} class="rcp-history-axis" />
+        <rect
+          :for={{x, height, count} <- @bars}
+          x={x}
+          y={@h - height}
+          width={bar_width(@bars, @w)}
+          height={height}
+          class="rcp-history-bar"
+        >
+          <title>{count} completed</title>
+        </rect>
+      </svg>
+      <figcaption class="rcp-note">
+        Completed handoffs · {length(@rows)} shown, one bar per time bucket
+      </figcaption>
+    </figure>
+    """
+  end
+
+  defp handoff_bars([], _w, _h), do: []
+
+  defp handoff_bars(times, w, h) do
+    first = Enum.min(times)
+    last = Enum.max(times)
+    bucket = max(60_000, div(max(last - first, 1), 60))
+    count = max(div(last - first, bucket) + 1, 1)
+    counts = Enum.frequencies_by(times, &div(&1 - first, bucket))
+    peak = counts |> Map.values() |> Enum.max()
+    bar_w = w / count
+
+    for i <- 0..(count - 1), n = Map.get(counts, i, 0), n > 0 do
+      {Float.round(i * bar_w, 1), Float.round(n / peak * h, 1), n}
+    end
+  end
+
+  defp bar_width([], _w), do: 0
+
+  defp bar_width(bars, w),
+    do: Float.round(max(w / max(length(bars), 1) * 0.8, 1), 1)
 
   attr :rows, :list, required: true
 
