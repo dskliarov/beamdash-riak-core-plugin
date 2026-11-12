@@ -18,7 +18,7 @@ defmodule RiakCorePlugin.PagesTest do
   defp pid, do: :c.pid(0, 101, 0)
 
   defp render(module, assigns) do
-    %{__changed__: nil, node: :a@h, syntax: :erlang}
+    %{__changed__: nil, node: :a@h, syntax: :erlang, note: nil, busy: false, confirm: nil}
     |> Map.merge(assigns)
     |> module.render()
     |> rendered_to_string()
@@ -563,8 +563,11 @@ defmodule RiakCorePlugin.PagesTest do
   end
 
   test "handoffs" do
-    assert render(HandoffsLive, %{handoffs: {:ok, %{active: [], pending: []}}}) =~
-             "No handoffs"
+    settings = %{concurrency: 2, inbound: true, outbound: true, cluster: "a@h t"}
+
+    assert render(HandoffsLive, %{
+             handoffs: {:ok, %{active: [], pending: [], settings: settings}}
+           }) =~ "No handoffs"
 
     active = [
       {:status_v2,
@@ -584,7 +587,11 @@ defmodule RiakCorePlugin.PagesTest do
       :odd
     ]
 
-    html = render(HandoffsLive, %{handoffs: {:ok, %{active: active, pending: @ring.pending}}})
+    html =
+      render(HandoffsLive, %{
+        handoffs: {:ok, %{active: active, pending: @ring.pending, settings: settings}}
+      })
+
     assert html =~ "hinted"
     # the attached node (a@h) is plain text, other nodes switch beamdash
     assert html =~ ~r{<span>a@h</span> →\s*<a href="/nodes\?switch=b%40h"[^>]*>b@h</a>}
@@ -598,7 +605,11 @@ defmodule RiakCorePlugin.PagesTest do
     assert html =~ "&lt;0.101.0&gt;"
 
     # an odd pending entry's text is shown once, not inspected again
-    html = render(HandoffsLive, %{handoffs: {:ok, %{active: [], pending: [:odd]}}})
+    html =
+      render(HandoffsLive, %{
+        handoffs: {:ok, %{active: [], pending: [:odd], settings: settings}}
+      })
+
     assert html =~ ":odd"
     refute html =~ "&quot;:odd&quot;"
   end

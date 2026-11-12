@@ -112,7 +112,11 @@ attached one; otherwise the Nodes tab says why it couldn't switch.
   type, module, partitions, from → to, direction, status, size or progress,
   start time and sender pid (a link to the process). Also the pending ownership changes
   (`riak_core_ring:pending_changes/1`). It shows "No handoffs" when both are
-  empty.
+  empty. It shows the handoff concurrency limit and whether inbound/outbound
+  handoffs are enabled, and can set the limit, pause/resume a direction,
+  kill all handoffs, force handoffs or refresh the local ring. Pausing,
+  killing and setting the limit to zero ask for confirmation; each action
+  is kept in the history.
 - **History**: what the plugin has kept of the attached node's cluster
   (see [History](#history)), one kind at a time, newest first, with a tab
   for each: **Handoffs** (each completed handoff: type, module,

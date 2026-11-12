@@ -534,8 +534,75 @@ defmodule RiakCorePlugin.Riak do
   @spec handoffs(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
   def handoffs(target) do
     with {:ok, active} <- call(target, :riak_core_handoff_manager, :status, []),
-         {:ok, pending} <- eval_ring(target, @pending_exprs) do
-      {:ok, %{active: active, pending: pending}}
+         {:ok, pending} <- eval_ring(target, @pending_exprs),
+         {:ok, settings} <- handoff_settings(target) do
+      {:ok, %{active: active, pending: pending, settings: settings}}
+    end
+  end
+
+  @doc """
+  The handoff controls' view: `%{concurrency, inbound, outbound, cluster}`.
+  `concurrency` is `riak_core_handoff_manager:get_concurrency/0`, and
+  `inbound`/`outbound` are whether handoffs are enabled in that direction
+  (`disable_inbound_handoff`/`disable_outbound_handoff` in riak_core's
+  environment). `cluster` is the history key for auditing a change.
+  """
+  @spec handoff_settings(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
+  def handoff_settings(target) do
+    with {:ok, concurrency} <-
+           call(target, :riak_core_handoff_manager, :get_concurrency, []),
+         {:ok, disable_in} <-
+           call(target, :application, :get_env, [:riak_core, :disable_inbound_handoff, false]),
+         {:ok, disable_out} <-
+           call(target, :application, :get_env, [:riak_core, :disable_outbound_handoff, false]),
+         {:ok, cluster} <- cluster_name(target) do
+      {:ok,
+       %{
+         concurrency: concurrency,
+         inbound: not disable_in,
+         outbound: not disable_out,
+         cluster: Data.cluster_key(cluster)
+       }}
+    end
+  end
+
+  @doc """
+  Runs a handoff control on the attached node: `{:concurrency, n}`,
+  `{:direction, :enable | :disable, :inbound | :outbound | :both}`,
+  `{:kill_direction, direction}`, `:kill_all`, `:force` (force all running
+  vnodes to start handoff) or `:refresh_ring`.
+  """
+  @spec handoff_action(GenServer.server(), term()) :: :ok | {:error, String.t()}
+  def handoff_action(target, {:concurrency, n}) when is_integer(n) and n >= 0,
+    do: handoff_call(target, :riak_core_handoff_manager, :set_concurrency, [n])
+
+  def handoff_action(target, {:direction, mode, direction})
+      when mode in [:enable, :disable] and direction in [:inbound, :outbound, :both],
+      do:
+        handoff_call(target, :riak_core_handoff_manager, :handoff_change_enabled_setting, [
+          mode,
+          direction
+        ])
+
+  def handoff_action(target, {:kill_direction, direction})
+      when direction in [:inbound, :outbound],
+      do:
+        handoff_call(target, :riak_core_handoff_manager, :kill_handoffs_in_direction, [direction])
+
+  def handoff_action(target, :kill_all),
+    do: handoff_call(target, :riak_core_handoff_manager, :kill_handoffs, [])
+
+  def handoff_action(target, :force),
+    do: handoff_call(target, :riak_core_vnode_manager, :force_handoffs, [])
+
+  def handoff_action(target, :refresh_ring),
+    do: handoff_call(target, :riak_core_ring_manager, :refresh_my_ring, [])
+
+  defp handoff_call(target, mod, fun, args) do
+    case call(target, mod, fun, args) do
+      {:ok, :ok} -> :ok
+      {:ok, other} -> {:error, "unexpected answer: #{inspect(other)}"}
+      error -> error
     end
   end
 

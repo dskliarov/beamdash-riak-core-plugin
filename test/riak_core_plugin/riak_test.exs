@@ -154,8 +154,34 @@ defmodule RiakCorePlugin.RiakTest do
     assert node in up and node() in up
   end
 
-  test "handoffs/1: status/0 and the pending changes", %{node: node} do
-    assert Riak.handoffs(target(node)) == {:ok, %{active: [], pending: []}}
+  test "handoffs/1: status, pending changes and handoff settings", %{node: node} do
+    assert {:ok, %{active: [], pending: [], settings: settings}} = Riak.handoffs(target(node))
+    assert settings.concurrency == 2
+    assert settings.inbound and settings.outbound
+    assert is_binary(settings.cluster)
+  end
+
+  test "handoff_action/2 and handoff_settings/1 call the managers" do
+    {peer, node} = Peer.start()
+    on_exit(fn -> Peer.stop(peer) end)
+    target = target(node)
+
+    assert :ok = Riak.handoff_action(target, {:concurrency, 3})
+    assert :ok = Riak.handoff_action(target, {:direction, :disable, :inbound})
+    assert :ok = Riak.handoff_action(target, {:kill_direction, :outbound})
+    assert :ok = Riak.handoff_action(target, :kill_all)
+    assert :ok = Riak.handoff_action(target, :force)
+    assert :ok = Riak.handoff_action(target, :refresh_ring)
+
+    calls = Peer.calls(node)
+    assert {:riak_core_handoff_manager, {:set_concurrency, [3]}} in calls
+
+    assert {:riak_core_handoff_manager, {:handoff_change_enabled_setting, [:disable, :inbound]}} in calls
+
+    assert {:riak_core_handoff_manager, {:kill_handoffs_in_direction, [:outbound]}} in calls
+    assert {:riak_core_handoff_manager, {:kill_handoffs, []}} in calls
+    assert {:riak_core_vnode_manager, :force_handoffs} in calls
+    assert {:riak_core_ring_manager, :refresh_my_ring} in calls
   end
 
   test "ring_ready/2: the result as text, a timeout as readable text", %{node: node} do

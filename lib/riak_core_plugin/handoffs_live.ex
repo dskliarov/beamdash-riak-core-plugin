@@ -9,11 +9,15 @@ defmodule RiakCorePlugin.HandoffsLive do
 
   import RiakCorePlugin.Components
   alias Beamdash.Plugin.Format
-  alias RiakCorePlugin.{Data, Riak}
+  alias RiakCorePlugin.{Data, History, Riak}
 
   @impl true
-  def plugin_mount(_params, _session, socket),
-    do: {:ok, setup_loads(socket, handoffs: {5_000, &load_handoffs/1})}
+  def plugin_mount(_params, _session, socket) do
+    {:ok,
+     socket
+     |> assign(confirm: nil, busy: false, note: nil)
+     |> setup_loads(handoffs: {5_000, &load_handoffs/1})}
+  end
 
   @impl true
   def connection_changed(event, socket), do: {:noreply, reconnect(socket, event)}
@@ -23,9 +27,69 @@ defmodule RiakCorePlugin.HandoffsLive do
   def plugin_info(_msg, socket), do: {:noreply, socket}
 
   @impl true
+  def handle_async(:action, result, socket) do
+    note =
+      case result do
+        {:ok, {text, :ok}} -> {:ok, text}
+        {:ok, {text, {:error, message}}} -> {:error, "#{text} failed: #{message}"}
+        other -> {:error, "failed: #{inspect(other)}"}
+      end
+
+    {:noreply, socket |> assign(busy: false, note: note) |> load(:handoffs)}
+  end
+
   def handle_async(key, result, socket), do: {:noreply, loaded(socket, key, result)}
 
   @impl true
+  def handle_event("concurrency", %{"count" => text}, socket) do
+    case Integer.parse(String.trim(text)) do
+      {n, ""} when n >= 0 ->
+        action = {:concurrency, n}
+        label = "Handoff concurrency set to #{n}"
+
+        if n == 0,
+          do: {:noreply, ask(socket, action, "Set concurrency to 0? This stops all handoffs.")},
+          else: {:noreply, run(socket, action, label)}
+
+      _ ->
+        {:noreply, assign(socket, note: {:error, "The concurrency limit must be zero or more"})}
+    end
+  end
+
+  def handle_event("pause_direction", %{"direction" => direction}, socket) do
+    with {:ok, direction} <- direction(direction) do
+      {:noreply,
+       ask(
+         socket,
+         {:direction, :disable, direction},
+         "Pause #{direction} handoffs? Their active transfers are killed."
+       )}
+    else
+      :error -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("enable_direction", %{"direction" => direction}, socket) do
+    with {:ok, direction} <- direction(direction) do
+      {:noreply, run(socket, {:direction, :enable, direction}, "Enabled #{direction} handoffs")}
+    else
+      :error -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("kill_all", _params, socket),
+    do: {:noreply, ask(socket, :kill_all, "Kill all active handoffs?")}
+
+  def handle_event("force", _params, socket),
+    do: {:noreply, ask(socket, :force, "Force every running vnode to start handoff?")}
+
+  def handle_event("refresh_ring", _params, socket),
+    do: {:noreply, run(socket, :refresh_ring, "Asked the node to refresh its ring")}
+
+  def handle_event("confirm", _params, %{assigns: %{confirm: {action, text}}} = socket),
+    do: {:noreply, socket |> assign(confirm: nil) |> run(action, text)}
+
+  def handle_event("cancel", _params, socket), do: {:noreply, assign(socket, confirm: nil)}
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   @impl true
@@ -34,6 +98,98 @@ defmodule RiakCorePlugin.HandoffsLive do
     <div class="rcp-page">
       <.header title="Handoffs" node={@node} />
       <.result :let={handoffs} node={@node} result={@handoffs}>
+        <p
+          :if={@note}
+          class={["rcp-note-line", if(elem(@note, 0) == :ok, do: "rcp-ok", else: "rcp-error")]}
+          role="status"
+        >
+          {elem(@note, 1)}
+        </p>
+
+        <div class="rcp-cards">
+          <.card label="Concurrency" value={"#{handoffs.settings.concurrency}"} />
+          <.card
+            label="Inbound"
+            value={if handoffs.settings.inbound, do: "enabled", else: "paused"}
+            class={if handoffs.settings.inbound, do: "rcp-ok", else: "rcp-bad"}
+          />
+          <.card
+            label="Outbound"
+            value={if handoffs.settings.outbound, do: "enabled", else: "paused"}
+            class={if handoffs.settings.outbound, do: "rcp-ok", else: "rcp-bad"}
+          />
+        </div>
+
+        <div class="rcp-form">
+          <form phx-submit="concurrency">
+            <input
+              type="number"
+              name="count"
+              min="0"
+              value={handoffs.settings.concurrency}
+              aria-label="Handoff concurrency"
+            />
+            <button type="submit" disabled={@busy}>Set limit</button>
+          </form>
+          <button
+            :if={handoffs.settings.inbound}
+            type="button"
+            class="rcp-danger"
+            phx-click="pause_direction"
+            phx-value-direction="inbound"
+            disabled={@busy}
+          >
+            Pause inbound
+          </button>
+          <button
+            :if={!handoffs.settings.inbound}
+            type="button"
+            class="secondary"
+            phx-click="enable_direction"
+            phx-value-direction="inbound"
+            disabled={@busy}
+          >
+            Enable inbound
+          </button>
+          <button
+            :if={handoffs.settings.outbound}
+            type="button"
+            class="rcp-danger"
+            phx-click="pause_direction"
+            phx-value-direction="outbound"
+            disabled={@busy}
+          >
+            Pause outbound
+          </button>
+          <button
+            :if={!handoffs.settings.outbound}
+            type="button"
+            class="secondary"
+            phx-click="enable_direction"
+            phx-value-direction="outbound"
+            disabled={@busy}
+          >
+            Enable outbound
+          </button>
+          <button type="button" class="rcp-danger" phx-click="kill_all" disabled={@busy}>
+            Kill all
+          </button>
+          <button type="button" class="secondary" phx-click="force" disabled={@busy}>
+            Force handoffs
+          </button>
+          <button type="button" class="secondary" phx-click="refresh_ring" disabled={@busy}>
+            Refresh ring
+          </button>
+        </div>
+
+        <div :if={@confirm} class="rcp-confirm" role="alertdialog" aria-label="Confirm">
+          <span>{elem(@confirm, 1)}</span>
+          <button type="button" class="rcp-danger-solid" phx-click="confirm" disabled={@busy}>
+            Confirm
+          </button>
+          <button type="button" class="secondary" phx-click="cancel">Cancel</button>
+        </div>
+
         <p :if={handoffs.active == [] and handoffs.pending == []} class="rcp-note">No handoffs.</p>
 
         <div :if={handoffs.active != []}>
@@ -151,6 +307,37 @@ defmodule RiakCorePlugin.HandoffsLive do
 
   defp eta(%{eta_ms: ms}) when is_integer(ms), do: Data.uptime(ms)
   defp eta(_row), do: nil
+
+  defp direction("inbound"), do: {:ok, :inbound}
+  defp direction("outbound"), do: {:ok, :outbound}
+  defp direction(_), do: :error
+
+  defp ask(socket, action, text), do: assign(socket, confirm: {action, text}, note: nil)
+
+  defp run(%{assigns: %{busy: true}} = socket, _action, _text), do: socket
+
+  defp run(socket, action, text) do
+    target = socket.assigns.beamdash_target
+    node = socket.assigns.node
+
+    key =
+      case socket.assigns.handoffs do
+        {:ok, %{settings: %{cluster: cluster}}} -> cluster
+        _ -> nil
+      end
+
+    if live?(socket) do
+      socket
+      |> assign(busy: true, note: nil, confirm: nil)
+      |> start_async(:action, fn ->
+        result = Riak.handoff_action(target, action)
+        History.record_admin(key, node, text, result)
+        {text, result}
+      end)
+    else
+      socket
+    end
+  end
 
   defp load_handoffs(%{beamdash_target: target}), do: fn -> Riak.handoffs(target) end
 end
