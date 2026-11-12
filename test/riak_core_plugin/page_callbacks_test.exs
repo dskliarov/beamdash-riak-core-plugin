@@ -381,7 +381,13 @@ defmodule RiakCorePlugin.PageCallbacksTest do
 
       # a well-formed new name is asked to join (and isn't reachable here)
       socket = socket |> event("join", %{"node" => "nobody@nowhere.invalid"}) |> acted()
-      assert render(socket) =~ "failed: the node is not reachable"
+      html = render(socket)
+      assert html =~ "failed: the node is not reachable"
+
+      # the result shows under the join form, where the button was clicked
+      [_, after_join] = String.split(html, "Stage join", parts: 2)
+      [under_form, _] = String.split(after_join, "Replace a node", parts: 2)
+      assert under_form =~ "failed: the node is not reachable"
     end
   end
 end

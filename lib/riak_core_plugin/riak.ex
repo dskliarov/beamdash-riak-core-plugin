@@ -479,6 +479,9 @@ defmodule RiakCorePlugin.Riak do
     with {:ok, statuses} <- call(target, :riak_core_vnode_manager, :all_vnodes_status, []) do
       rows =
         Enum.flat_map(statuses, fn {{mod, idx}, props} ->
+          # riak_core merges each vnode's properties with orddict:merge/3,
+          # so a vnode with one property has a lone tuple: {type, secondary}
+          props = List.wrap(props)
           type = props[:type]
           pid = props[:pid]
 

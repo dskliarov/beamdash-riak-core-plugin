@@ -253,9 +253,9 @@ defmodule RiakCorePlugin.RiakTest do
       p2 = Peer.spawn_idle(node)
 
       Peer.put(node, :rcp_vnode_status, [
-        {{:a_vnode, 0}, [type: :primary]},
+        {{:a_vnode, 0}, {:type, :primary}},
         {{:a_vnode, 1}, [type: :primary, pid: p1]},
-        {{:a_vnode, 2}, [type: :secondary]},
+        {{:a_vnode, 2}, {:type, :secondary}},
         {{:a_vnode, 3}, [type: :secondary, pid: p2]},
         {{:a_vnode, 4}, [type: :primary, pid: p1, forwarding: :b@h]},
         {{:a_vnode, 5}, [type: :primary, pid: p1, should_handoff: :c@h]}

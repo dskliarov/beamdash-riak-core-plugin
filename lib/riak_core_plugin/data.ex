@@ -516,7 +516,8 @@ defmodule RiakCorePlugin.Data do
     not_member: "it is not a member of the cluster",
     only_member: "it is the only member of the cluster",
     already_leaving: "it is already leaving",
-    is_claimant: "it is the claimant; it can't be force removed or force replaced",
+    is_claimant:
+      "it is the claimant; it can't be force removed or force replaced. If it is down, mark it down first: the role then moves to another member",
     is_up: "it is up; only a node that is down can be marked down",
     already_replacement: "it is already the replacement of another node",
     invalid_replacement: "the replacement must be a joining node that owns no partitions",
