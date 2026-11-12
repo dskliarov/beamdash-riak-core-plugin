@@ -410,4 +410,387 @@ defmodule RiakCorePlugin.DataTest do
       assert Data.claimant_note(:a@h, @members, nil) == nil
     end
   end
+
+  describe "history" do
+    defp handoff(opts) do
+      {:status_v2,
+       Keyword.merge(
+         [
+           mod: :kv_vnode,
+           src_partition: 0,
+           target_partition: 0,
+           src_node: :a@h,
+           target_node: :b@h,
+           direction: :outbound,
+           status: :running,
+           start_ts: {1_761, 400_000, 0},
+           sender_pid: pid1(),
+           stats: [size: {2048, :bytes}, pct_done_decimal: 0.5],
+           type: :ownership
+         ],
+         opts
+       )}
+    end
+
+    test "cluster_key: the cluster name as text, the same on every member" do
+      assert Data.cluster_key({:a@h, {1_761, 400_000, 5}}) == "a@h 2025-10-25T13:46:40Z"
+      assert Data.cluster_key(:undefined) == ":undefined"
+    end
+
+    test "cluster_handoffs: each handoff once, from its sender; who answered" do
+      out = handoff([])
+      inbound = handoff(direction: :inbound)
+      other = handoff(src_partition: 1, target_partition: 1, start_ts: :undefined)
+
+      {active, answered} =
+        Data.cluster_handoffs(%{
+          a@h: {:ok, [out, other]},
+          b@h: {:ok, [inbound, {:junk}]},
+          c@h: {:error, "no answer in time"}
+        })
+
+      assert answered == MapSet.new([:a@h, :b@h])
+      assert map_size(active) == 2
+
+      assert %{reporter: :a@h, direction: :outbound, start_ms: 1_761_400_000_000} =
+               active[{:kv_vnode, 0, 0, :a@h, :b@h}]
+
+      assert %{start_ms: nil} = active[{:kv_vnode, 1, 1, :a@h, :b@h}]
+    end
+
+    test "handoff_changes: a handoff gone from its answering reporter has ended" do
+      {active, answered} = Data.cluster_handoffs(%{a@h: {:ok, [handoff([])]}, b@h: {:ok, []}})
+      id = {:kv_vnode, 0, 0, :a@h, :b@h}
+
+      # the first look: nothing has ended
+      assert {[], tracked} = Data.handoff_changes(nil, active, answered, 1_000)
+      assert %{^id => %{first_seen: 1_000, last_seen: 1_000}} = tracked
+
+      # still running: first_seen is kept
+      assert {[], tracked} = Data.handoff_changes(tracked, active, answered, 6_000)
+      assert %{^id => %{first_seen: 1_000, last_seen: 6_000}} = tracked
+
+      # gone, a@h answered: ended
+      {active, answered} = Data.cluster_handoffs(%{a@h: {:ok, []}})
+      assert active == %{}
+      now = 1_761_400_090_000
+      assert {[ended], tracked} = Data.handoff_changes(tracked, %{}, answered, now)
+      assert tracked == %{}
+
+      assert ended == %{
+               type: :ownership,
+               module: :kv_vnode,
+               src_partition: 0,
+               target_partition: 0,
+               from: :a@h,
+               to: :b@h,
+               started_ms: 1_761_400_000_000,
+               ended_ms: now,
+               duration_ms: 90_000,
+               last_seen_ms: 6_000,
+               size: %{n: 2048, unit: :bytes},
+               progress: 0.5
+             }
+    end
+
+    test "handoff_changes: a reporter that didn't answer keeps its handoffs, for a while" do
+      {active, answered} =
+        Data.cluster_handoffs(%{a@h: {:ok, [handoff(start_ts: :undefined)]}})
+
+      {[], tracked} = Data.handoff_changes(nil, active, answered, 0)
+
+      assert {[], ^tracked} = Data.handoff_changes(tracked, %{}, MapSet.new([:b@h]), 60_000)
+      assert {[], %{}} = Data.handoff_changes(tracked, %{}, MapSet.new(), 600_000)
+
+      # with no start time, the duration is from when it was first seen
+      assert {[%{started_ms: 0, duration_ms: 5_000}], _} =
+               Data.handoff_changes(tracked, %{}, MapSet.new([:a@h]), 5_000)
+    end
+
+    test "split_ended: hinted handoffs are stored as they are, ring ones kept for the ring" do
+      hinted = %{type: :hinted, module: :kv_vnode, src_partition: 0, from: :a@h, ended_ms: 10}
+      owned = %{hinted | type: :ownership}
+      old = %{owned | src_partition: 1, ended_ms: -3_600_000}
+
+      assert {[^hinted], live} =
+               Data.split_ended([hinted, owned], %{{:kv_vnode, 1, :a@h} => [old]}, 10)
+
+      assert live == %{{:kv_vnode, 0, :a@h} => [owned]}
+    end
+
+    test "transfer_changes: a module the ring lists as done is a completed transfer, however short" do
+      entry = fn mods, status -> {0, :a@h, :b@h, mods, status} end
+
+      # the first look: what is already done isn't recorded
+      assert {[], tracked, %{}} =
+               Data.transfer_changes(
+                 nil,
+                 [entry.([:kv_vnode], :awaiting), {8, :a@h, :c@h, [], :awaiting}],
+                 [:kv_vnode, :x_vnode],
+                 %{},
+                 0
+               )
+
+      assert {[], tracked, %{}} =
+               Data.transfer_changes(
+                 tracked,
+                 [entry.([:kv_vnode], :awaiting), {8, :a@h, :c@h, [], :awaiting}],
+                 [:kv_vnode, :x_vnode],
+                 %{},
+                 5_000
+               )
+
+      # x_vnode's transfer of 0 completed, and kv_vnode's of 8
+      pending = [
+        entry.([:kv_vnode, :x_vnode], :complete),
+        {8, :a@h, :c@h, [:kv_vnode], :awaiting}
+      ]
+
+      assert {events, tracked, %{}} =
+               Data.transfer_changes(tracked, pending, [:kv_vnode, :x_vnode], %{}, 10_000)
+
+      assert Enum.sort(for e <- events, do: {e.src_partition, e.module, e.to}) ==
+               [{0, :x_vnode, :b@h}, {8, :kv_vnode, :c@h}]
+
+      assert Enum.all?(
+               events,
+               &match?(
+                 %{
+                   type: :ownership,
+                   from: :a@h,
+                   ended_ms: 10_000,
+                   started_ms: 0,
+                   handoffs: 0,
+                   seen_complete: true
+                 },
+                 &1
+               )
+             )
+
+      assert map_size(tracked) == 2
+
+      # seen once: not again
+      assert {[], _, _} =
+               Data.transfer_changes(tracked, pending, [:kv_vnode, :x_vnode], %{}, 15_000)
+    end
+
+    test "transfer_changes: a live handoff caught gives its size and times; resize has no next owner" do
+      live = %{
+        {:kv_vnode, 0, :a@h} => [
+          %{started_ms: 100, ended_ms: 900, size: %{n: 5, unit: :objects}, target_partition: 3},
+          %{started_ms: 200, ended_ms: 800, size: %{n: 2, unit: :objects}, target_partition: 3}
+        ],
+        {:kv_vnode, 9, :a@h} => [%{started_ms: 1, ended_ms: 2, size: nil, target_partition: 9}]
+      }
+
+      tracked = %{{0, :a@h, :"$resize"} => %{first_seen: 500, done: []}}
+
+      assert {[done], _, rest} =
+               Data.transfer_changes(
+                 tracked,
+                 [{0, :a@h, :"$resize", [:kv_vnode], :complete}],
+                 [:kv_vnode],
+                 live,
+                 5_000
+               )
+
+      assert %{type: :resize, to: nil, src_partition: 0, target_partition: 3} = done
+      assert %{started_ms: 100, ended_ms: 900, duration_ms: 800, handoffs: 2} = done
+      assert done.size == %{n: 7, unit: :objects}
+      assert Map.keys(rest) == [{:kv_vnode, 9, :a@h}]
+    end
+
+    test "transfer_changes: an entry cleared before its modules were seen done" do
+      tracked = %{{0, :a@h, :b@h} => %{first_seen: 0, done: [:kv_vnode]}}
+
+      assert {[%{module: :x_vnode, seen_complete: false, ended_ms: 7_000}], tracked, _} =
+               Data.transfer_changes(tracked, [], [:kv_vnode, :x_vnode], %{}, 7_000)
+
+      assert tracked == %{}
+    end
+
+    @membership %{
+      cluster: {:a@h, {1, 2, 3}},
+      size: 8,
+      claimant: :a@h,
+      members: [{:a@h, :valid}, {:b@h, :valid}],
+      pending: 0,
+      counts: [{:a@h, 4}, {:b@h, 4}],
+      up: [:a@h, :b@h]
+    }
+
+    test "cluster_snapshot: members with their up state; when pending changes began" do
+      s0 = Data.cluster_snapshot(@membership, nil, 0)
+      assert s0.members == %{a@h: {:valid, true}, b@h: {:valid, true}}
+      assert s0.pending_since == nil
+
+      s1 = Data.cluster_snapshot(%{@membership | pending: 3}, s0, 1_000)
+      assert s1.pending_since == 1_000
+      s2 = Data.cluster_snapshot(%{@membership | pending: 2}, s1, 2_000)
+      assert s2.pending_since == 1_000
+      assert Data.cluster_snapshot(@membership, s2, 3_000).pending_since == nil
+    end
+
+    test "member_changes: status and up/down changes, joins and removals" do
+      before = Data.cluster_snapshot(@membership, nil, 0)
+
+      later =
+        Data.cluster_snapshot(
+          %{@membership | members: [{:a@h, :leaving}, {:c@h, :joining}], up: [:a@h]},
+          before,
+          1
+        )
+
+      assert Data.member_changes(before, before) == []
+
+      assert Data.member_changes(before, later) == [
+               %{node: :a@h, from: :valid, to: :leaving, was_up: true, up: true},
+               %{node: :b@h, from: :valid, to: nil, was_up: true, up: nil},
+               %{node: :c@h, from: nil, to: :joining, was_up: nil, up: false}
+             ]
+    end
+
+    test "ring_changes: claimant, size, transfers started and done, ownership" do
+      s0 = Data.cluster_snapshot(@membership, nil, 0)
+      assert Data.ring_changes(s0, s0, 0) == []
+
+      moving = %{@membership | pending: 2, claimant: :b@h}
+      s1 = Data.cluster_snapshot(moving, s0, 1_000)
+
+      assert Data.ring_changes(s0, s1, 1_000) == [
+               %{event: "claimant", from: :a@h, to: :b@h},
+               %{
+                 event: "transfers_started",
+                 pending: 2,
+                 partitions: [%{node: :a@h, partitions: 4}, %{node: :b@h, partitions: 4}]
+               }
+             ]
+
+      done = %{moving | pending: 0, counts: [{:b@h, 8}]}
+      s2 = Data.cluster_snapshot(done, s1, 61_000)
+
+      assert Data.ring_changes(s1, s2, 61_000) == [
+               %{
+                 event: "transfers_done",
+                 duration_ms: 60_000,
+                 partitions: [%{node: :b@h, partitions: 8}]
+               }
+             ]
+
+      removed = Data.cluster_snapshot(%{done | counts: [{:c@h, 8}], size: 16}, s2, 70_000)
+
+      assert [
+               %{event: "size", from: 8, to: 16},
+               %{event: "ownership", before: [%{node: :b@h}], partitions: [%{node: :c@h}]}
+             ] = Data.ring_changes(s2, removed, 70_000)
+    end
+
+    test "load_sample: the figures the history keeps of a load view" do
+      view =
+        Data.load_view(%{
+          elapsed: 1_000,
+          schedulers: {[{1, 0, 0}, {2, 0, 0}], [{1, 250, 1000}, {2, 750, 1000}]},
+          io: {{{:input, 0}, {:output, 0}}, {{:input, 100}, {:output, 50}}},
+          memory: [total: 4096, processes: 1],
+          top: []
+        })
+
+      assert Data.load_sample(view) == %{
+               avg_busy: 50.0,
+               max_busy: 75.0,
+               max_scheduler: 2,
+               min_busy: 25.0,
+               schedulers: [25.0, 75.0],
+               input: 100,
+               output: 50,
+               memory: 4096
+             }
+    end
+
+    test "history_rows: stored rows (JSON data) as text" do
+      at = 1_761_400_000_000
+
+      assert [
+               %{
+                 at: "2025-10-25 13:46:40 UTC",
+                 partition: "0 → 1",
+                 took: "1m 30s",
+                 size: "2.0 KB",
+                 from: "a@h"
+               }
+             ] =
+               Data.history_rows("handoffs", [
+                 %{
+                   at: at,
+                   data: %{
+                     "src_partition" => 0,
+                     "target_partition" => 1,
+                     "from" => "a@h",
+                     "duration_ms" => 90_000,
+                     "size" => %{"n" => 2048, "unit" => "bytes"}
+                   }
+                 }
+               ])
+
+      assert [%{change: "valid → leaving, went down"}] =
+               Data.history_rows("members", [
+                 %{
+                   at: at,
+                   data: %{
+                     "node" => "a@h",
+                     "from" => "valid",
+                     "to" => "leaving",
+                     "was_up" => true,
+                     "up" => false
+                   }
+                 }
+               ])
+
+      assert [%{change: "transfers done after 1m 0s; partitions: b@h 8"}] =
+               Data.history_rows("ring", [
+                 %{
+                   at: at,
+                   data: %{
+                     "event" => "transfers_done",
+                     "duration_ms" => 60_000,
+                     "partitions" => [%{"node" => "b@h", "partitions" => 8}]
+                   }
+                 }
+               ])
+
+      assert [%{busiest: "2: 75.0%", avg_busy: 50.0, node: "a@h"}] =
+               Data.history_rows("load", [
+                 %{
+                   at: at,
+                   node: "a@h",
+                   data: %{"avg_busy" => 50.0, "max_busy" => 75.0, "max_scheduler" => 2}
+                 }
+               ])
+
+      assert [%{result: "done", changes: ["a@h: leave"]}, %{result: "failed: no"}] =
+               Data.history_rows("admin", [
+                 %{
+                   at: at,
+                   node: "a@h",
+                   data: %{"action" => "x", "ok" => true, "changes" => ["a@h: leave"]}
+                 },
+                 %{at: at, node: "a@h", data: %{"action" => "y", "ok" => false, "error" => "no"}}
+               ])
+    end
+
+    test "member_change_text: joins, removals, down and up" do
+      assert Data.member_change_text(%{"from" => nil, "to" => "joining", "up" => true}) ==
+               "joined (joining)"
+
+      assert Data.member_change_text(%{"from" => "leaving", "to" => nil, "was_up" => true}) ==
+               "left the ring (was leaving)"
+
+      assert Data.member_change_text(%{
+               "from" => "valid",
+               "to" => "valid",
+               "was_up" => false,
+               "up" => true
+             }) == "came back up"
+    end
+  end
 end

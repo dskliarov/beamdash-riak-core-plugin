@@ -12,11 +12,15 @@ defmodule RiakCorePlugin.AdminLive do
   ask for a confirmation first. Node names from the browser are only taken
   when they are cluster members (or, for a join, nodes the target sees or a
   well-formed `name@host`).
+
+  Each action is kept in the cluster's history (`admin`, see
+  `RiakCorePlugin.History`) with its result; a commit also with the changes
+  of the plan it committed.
   """
   use Beamdash.Plugin.Page
 
   import RiakCorePlugin.Components
-  alias RiakCorePlugin.{Data, Riak}
+  alias RiakCorePlugin.{Data, History, Riak}
 
   @cluster_ms 5_000
   @plan_ms 10_000
@@ -151,13 +155,35 @@ defmodule RiakCorePlugin.AdminLive do
   defp run(socket, action, text) do
     target = socket.assigns.beamdash_target
     node = socket.assigns.node
+    key = cluster_key(socket)
+    changes = if action == :commit, do: plan_changes(socket), else: []
 
     if live?(socket) do
       socket
       |> assign(busy: true, note: nil, confirm: nil)
-      |> start_async(:action, fn -> {text, Riak.admin(target, node, action)} end)
+      |> start_async(:action, fn ->
+        result = Riak.admin(target, node, action)
+        History.record_admin(key, node, text, result, changes)
+        {text, result}
+      end)
     else
       socket
+    end
+  end
+
+  defp cluster_key(socket) do
+    case socket.assigns.cluster do
+      {:ok, %{name: name}} -> Data.cluster_key(name)
+      _ -> nil
+    end
+  end
+
+  # The changes the plan on screen commits (the claimant commits its own
+  # plan, which this one shows).
+  defp plan_changes(socket) do
+    case socket.assigns.plan do
+      {:ok, %{changes: changes}} -> changes
+      _ -> []
     end
   end
 
@@ -214,7 +240,7 @@ defmodule RiakCorePlugin.AdminLive do
   def render(assigns) do
     ~H"""
     <div class="rcp-page">
-      <.header title="Admin" node={@node} />
+      <.header title="Admin" node={@node} refresh="refreshes every 5 s; plan every 10 s" />
       <p
         :if={@note}
         class={["rcp-note-line", if(elem(@note, 0) == :ok, do: "rcp-ok", else: "rcp-error")]}

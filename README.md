@@ -1,7 +1,7 @@
 # riak_core plugin for beamdash
 
-A [beamdash](https://github.com/dskliarov/beamdash) plugin that adds six
-pages for riak_core and riak_core_lite. It shows them in beamdash's Plugins
+A [beamdash](https://github.com/dskliarov/beamdash) plugin that adds seven
+pages for riak_core and riak_core_lite, and keeps the cluster's history. It shows them in beamdash's Plugins
 menu while `riak_core ~> 0.10` runs on the attached node. The application
 name of riak_core_lite is `riak_core`.
 
@@ -22,6 +22,10 @@ In beamdash, open Settings → Plugins and enter one of these dependencies:
 
 beamdash fetches and compiles only this plugin's own source. Its deps are
 read as data and are not fetched.
+
+The plugin needs a beamdash build with plugin collectors and history
+(`Beamdash.Plugin.record/4`). An older build refuses to compile it, with
+"unknown option :collectors".
 
 ## Pages
 
@@ -105,6 +109,16 @@ attached one; otherwise the Nodes tab says why it couldn't switch.
   start time and sender pid (a link to the process). Also the pending ownership changes
   (`riak_core_ring:pending_changes/1`). It shows "No handoffs" when both are
   empty.
+- **History**: what the plugin has kept of the attached node's cluster
+  (see [History](#history)), one kind at a time, newest first, with a tab
+  for each: **Handoffs** (each completed handoff: type, module,
+  partition, from → to, how long it took, its size when known), **Members**
+  (status changes, a member going down or coming back up, joins and
+  removals), **Ring** (claimant and ring size changes, partition transfers
+  starting and finishing, ownership changing without transfers), **Load**
+  (a sample every minute, with a chart of the average and busiest
+  scheduler's busy share) and **Admin** (the Admin page's actions and their
+  results). It loads every 10 seconds. When no history is kept it says why.
 - **Admin**: changes the cluster with riak_core's staged workflow, as
   `riak-admin cluster` does. Per member: **Leave** (hands its data off,
   `riak_core_claimant:leave_member/1`), **Force remove** (its partitions
@@ -127,6 +141,8 @@ attached one; otherwise the Nodes tab says why it couldn't switch.
   Every staged change goes through the claimant: while it is down, the
   page says so (instead of the raw nodedown) and that **Mark down** on it
   lets another member become the claimant.
+  Each action is kept in the history with its result; a commit also keeps
+  the changes of the plan it committed.
 
 The ring record itself never crosses the wire. The `riak_core_ring`
 accessors run on the target in one rpc of `erl_eval:exprs/2` (stdlib), with
@@ -136,16 +152,55 @@ of the plugin's modules has to exist on the target. The Ring page reads
 size, claimant, owners, pending changes and member statuses that way; the
 Members page only member statuses and partitions per node.
 
+## History
+
+The plugin keeps the cluster's history in beamdash's event store, the
+SQLite file beamdash keeps its own snapshots in. Its collectors run in
+beamdash while riak_core runs on the attached node, whichever page is
+open, and each stores only what changed since its previous run:
+
+| Collector | Every | Stores | Cost per run |
+| --- | --- | --- | --- |
+| `handoffs` | 5 s | `handoffs`: each completed handoff | one rpc; the target reads the ring's pending changes and asks every member it sees for `riak_core_handoff_manager:status/0` (one `erpc:multicall/5`, 4 s each) |
+| `cluster` | 10 s | `members` and `ring` changes | two rpcs (the ring accessors, `erlang:nodes/1`) |
+| `load` | 60 s | `load`: a 1 s sample of the attached node | two rpcs, one of which reads every process twice, as the Load page does |
+
+The Admin page stores `admin` rows itself.
+
+Every row is keyed by the cluster's name (`riak_core_ring:cluster_name/1`),
+so the history of one cluster is the same whichever member beamdash is
+attached to. Ownership, resize and delete transfers are read from the
+ring's pending changes: riak_core marks each module's transfer done there
+and keeps the entry until the claimant clears it, so a transfer is recorded
+even when it took a few milliseconds (an in-memory store's usually do).
+Their start and end are those of the runs, within 5 s, unless a run caught
+the handoff running on its sender, which also gives its size. An entry the
+claimant clears before a run saw it done (or a change that was cleared or
+aborted) is recorded as "cleared before seen done". Hinted and repair
+handoffs aren't in the ring: they are only seen running, so one shorter
+than 5 s may be missed. A member that doesn't answer keeps its running
+handoffs open (for up to 10 minutes) instead of ending them. The first run after attaching only takes
+note of the cluster: changes from before it are not known.
+
+beamdash keeps the rows for 30 days, at most 100,000 for this plugin
+(`config :beamdash, :retention, plugin_events: %{max_age_days: ..., max_rows: ...}`).
+With beamdash's event store off (`config :beamdash, :store_file, false`)
+nothing is kept or collected, and the History page says so.
+
 ## MCP tools
 
 While riak_core runs on the attached node, beamdash's MCP server offers
-four read-only tools from this plugin: `riak_core.ring`,
-`riak_core.members`, `riak_core.handoffs` and `riak_core.load`. They return
+five read-only tools from this plugin: `riak_core.ring`,
+`riak_core.members`, `riak_core.handoffs`, `riak_core.load` and
+`riak_core.history`. The first four return
 the same data as the Ring, Members, Handoffs and Load pages, as JSON, except
 that `riak_core.ring` leaves out the fallback nodes (the Ring page's Fallback
 column): finding them takes one more rpc. `riak_core.load` takes a 1-second
 sample when it is called, as the Load page does, so its rates are for that
-second. Cluster changes (join, leave, commit) are not offered.
+second. `riak_core.history` returns the cluster's history of one `kind`
+(`handoffs`, `members`, `ring`, `load` or `admin`) over the last `minutes`
+(1440 by default), newest first, at most `limit` rows (50 by default, at
+most 500). Cluster changes (join, leave, commit) are not offered.
 Each tool has a 5-second limit set by beamdash, so on a large cluster or a
 slow node `members`, `handoffs` and `load` can run out of time.
 

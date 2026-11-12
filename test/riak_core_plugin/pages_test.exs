@@ -4,7 +4,15 @@ defmodule RiakCorePlugin.PagesTest do
 
   import Phoenix.LiveViewTest, only: [rendered_to_string: 1]
 
-  alias RiakCorePlugin.{AdminLive, HandoffsLive, LoadLive, MembersLive, RingLive, VnodesLive}
+  alias RiakCorePlugin.{
+    AdminLive,
+    HandoffsLive,
+    HistoryLive,
+    LoadLive,
+    MembersLive,
+    RingLive,
+    VnodesLive
+  }
 
   defp pid, do: :c.pid(0, 101, 0)
 
@@ -23,7 +31,7 @@ defmodule RiakCorePlugin.PagesTest do
     members: [{:a@h, :valid}, {:b@h, :leaving}]
   }
 
-  test "the entry module declares the six pages, the Ring page the main one" do
+  test "the entry module declares the seven pages, the Ring page the main one" do
     assert %{name: "riak_core", pages: pages, main: "ring"} = RiakCorePlugin.__beamdash_plugin__()
 
     assert Enum.map(pages, & &1.slug) == [
@@ -32,8 +40,106 @@ defmodule RiakCorePlugin.PagesTest do
              "vnodes",
              "load",
              "handoffs",
+             "history",
              "admin"
            ]
+  end
+
+  describe "history" do
+    @at 1_761_400_000_000
+
+    defp history(kind, rows),
+      do:
+        render(HistoryLive, %{
+          kind: kind,
+          history: {:ok, %{kind: kind, cluster: "a@h t", rows: rows}}
+        })
+
+    test "tabs for each kind; the cluster; nothing yet" do
+      html = history("handoffs", [])
+      assert html =~ "Cluster a@h t."
+      assert html =~ "Nothing yet."
+      assert html =~ ~r/class="rcp-tab active"[^>]*>\s*Handoffs/
+
+      for label <- ["Members", "Ring", "Load", "Admin"],
+          do: assert(html =~ ~r/phx-value-kind="[a-z]+"[^>]*>\s*#{label}/)
+    end
+
+    test "why there is no history" do
+      html =
+        render(HistoryLive, %{
+          kind: "ring",
+          history: {:error, "history is off: beamdash's event store is switched off"}
+        })
+
+      assert html =~ "history is off: beamdash&#39;s event store is switched off"
+    end
+
+    test "each kind's rows" do
+      handoffs =
+        RiakCorePlugin.Data.history_rows("handoffs", [
+          %{
+            at: @at,
+            data: %{
+              "type" => "ownership",
+              "module" => "kv_vnode",
+              "src_partition" => 0,
+              "target_partition" => 0,
+              "from" => "a@h",
+              "to" => "b@h",
+              "duration_ms" => 5_000
+            }
+          }
+        ])
+
+      html = history("handoffs", handoffs)
+      assert html =~ "2025-10-25 13:46:40 UTC"
+      assert html =~ "a@h → b@h"
+      assert html =~ "5s"
+
+      admin =
+        RiakCorePlugin.Data.history_rows("admin", [
+          %{
+            at: @at,
+            node: "a@h",
+            data: %{"action" => "Plan committed", "ok" => true, "changes" => ["b@h: leave"]}
+          }
+        ])
+
+      html = history("admin", admin)
+      assert html =~ "Plan committed"
+      assert html =~ "<li>b@h: leave</li>"
+      assert html =~ ~s(class="rcp-ok">done)
+    end
+
+    test "load: a chart of the busy share once there are two samples" do
+      sample = fn at, busy ->
+        %{
+          at: at,
+          node: "a@h",
+          data: %{
+            "avg_busy" => busy,
+            "max_busy" => busy * 2,
+            "max_scheduler" => 1,
+            "input" => 1024,
+            "output" => 0,
+            "memory" => 2048
+          }
+        }
+      end
+
+      one = RiakCorePlugin.Data.history_rows("load", [sample.(@at, 10.0)])
+      refute history("load", one) =~ "<svg"
+
+      two =
+        RiakCorePlugin.Data.history_rows("load", [sample.(@at + 60_000, 30.0), sample.(@at, 10.0)])
+
+      html = history("load", two)
+      assert html =~ ~s(aria-label="Busy share over time")
+      # oldest on the left: 10% then 30% of a 120 px high chart
+      assert html =~ ~s(points="0.0,108.0 600.0,84.0")
+      assert html =~ "1.0 KB/s"
+    end
   end
 
   test "states: no node, loading, error" do

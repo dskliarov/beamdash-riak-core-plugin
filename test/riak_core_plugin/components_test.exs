@@ -32,6 +32,22 @@ defmodule RiakCorePlugin.ComponentsTest do
              "/plugins/riak_core_plugin/ring"
   end
 
+  test "the header names the page and its actual refresh cadence" do
+    html = render_component(&Components.header/1, title: "Ring", node: :"kv1@127.0.0.1")
+    assert html =~ "riak_core: Ring"
+    assert html =~ "kv1@127.0.0.1 · refreshes every 5 s"
+
+    html =
+      render_component(&Components.header/1,
+        title: "History",
+        node: :"kv1@127.0.0.1",
+        refresh: "refreshes every 10 s"
+      )
+
+    assert html =~ "refreshes every 10 s"
+    refute html =~ "refreshes every 5 s"
+  end
+
   test "the claimant note: muted, in the error colour when the claimant is down, or nothing" do
     html = render_component(&Components.claimant_note/1, note: {:ok, "b@h is next"})
     assert html =~ ~s(class="rcp-claimant-note rcp-muted")

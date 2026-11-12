@@ -19,9 +19,19 @@ defmodule RiakCorePlugin.ToolsTest do
     :ok
   end
 
-  test "the plugin declares its four tools" do
-    assert Enum.map(RiakCorePlugin.__beamdash_plugin__().mcp_tools, & &1.name) ==
-             ["ring", "members", "handoffs", "load"]
+  test "the plugin declares its five tools, and its collectors" do
+    plugin = RiakCorePlugin.__beamdash_plugin__()
+
+    assert Enum.map(plugin.mcp_tools, & &1.name) == [
+             "ring",
+             "members",
+             "handoffs",
+             "load",
+             "history"
+           ]
+
+    assert Enum.map(plugin.collectors, &{&1.name, &1.interval}) ==
+             [{"handoffs", 5_000}, {"cluster", 10_000}, {"load", 60_000}]
   end
 
   test "ring summarises the attached node's ring", %{node: node} do
