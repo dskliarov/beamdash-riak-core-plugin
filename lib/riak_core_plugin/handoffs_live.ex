@@ -42,7 +42,9 @@ defmodule RiakCorePlugin.HandoffsLive do
             <thead>
               <tr>
                 <th>Type</th><th>Module</th><th>Partition</th><th>From → to</th><th>Direction</th>
-                <th>Status</th><th>Size / progress</th><th>Started</th><th>Sender</th>
+                <th>Status</th><th>Size / progress</th><th>Rate</th><th>ETA</th><th>Started</th><th>
+                  Sender
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -66,10 +68,12 @@ defmodule RiakCorePlugin.HandoffsLive do
                   <td>{name(row.direction)}</td>
                   <td>{row.status && Format.term(row.status, @syntax, 60)}</td>
                   <td>{size(row)}</td>
+                  <td>{rate(row)}</td>
+                  <td>{eta(row)}</td>
                   <td>{row.start}</td>
                   <td class="rcp-mono"><.sender pid={row.sender} syntax={@syntax} /></td>
                 <% else %>
-                  <td colspan="9" class="rcp-mono">{row.text}</td>
+                  <td colspan="11" class="rcp-mono">{row.text}</td>
                 <% end %>
               </tr>
             </tbody>
@@ -137,6 +141,16 @@ defmodule RiakCorePlugin.HandoffsLive do
     progress = row.progress && "#{Float.round(row.progress * 100.0, 1)}%"
     [size, progress] |> Enum.reject(&is_nil/1) |> Enum.join(", ")
   end
+
+  defp rate(%{size: {_, :bytes}, bytes_per_s: n}) when is_integer(n),
+    do: Format.bytes(n) <> "/s"
+
+  defp rate(%{objs_per_s: n}) when is_integer(n), do: "#{n} objects/s"
+  defp rate(%{bytes_per_s: n}) when is_integer(n), do: Format.bytes(n) <> "/s"
+  defp rate(_row), do: nil
+
+  defp eta(%{eta_ms: ms}) when is_integer(ms), do: Data.uptime(ms)
+  defp eta(_row), do: nil
 
   defp load_handoffs(%{beamdash_target: target}), do: fn -> Riak.handoffs(target) end
 end

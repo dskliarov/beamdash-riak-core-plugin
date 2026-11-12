@@ -198,6 +198,8 @@ defmodule RiakCorePlugin.Data do
       end
 
     stats = if is_list(props[:stats]), do: props[:stats], else: []
+    size = size(stats[:size] || props[:size])
+    progress = progress(stats[:pct_done_decimal])
 
     %{
       known: true,
@@ -211,10 +213,33 @@ defmodule RiakCorePlugin.Data do
       status: props[:status],
       start: timestamp(props[:start_ts]),
       sender: props[:sender_pid],
-      size: size(stats[:size] || props[:size]),
-      progress: progress(stats[:pct_done_decimal])
+      size: size,
+      progress: progress,
+      objs_total: non_neg_int(stats[:objs_total]),
+      objs_per_s: non_neg_int(stats[:objs_per_s]),
+      bytes_per_s: non_neg_int(stats[:bytes_per_s]),
+      eta_ms: eta_ms(size, progress, stats)
     }
   end
+
+  defp non_neg_int(n) when is_integer(n) and n >= 0, do: n
+  defp non_neg_int(_), do: nil
+
+  # Remaining work at the reported rate; nil until the rate and size are known.
+  defp eta_ms({total, unit}, progress, stats)
+       when is_integer(total) and total > 0 and is_number(progress) and progress < 1 do
+    rate =
+      case unit do
+        :objects -> stats[:objs_per_s]
+        :bytes -> stats[:bytes_per_s]
+        _ -> nil
+      end
+
+    if is_number(rate) and rate > 0,
+      do: round(total * (1 - progress) / rate * 1000)
+  end
+
+  defp eta_ms(_size, _progress, _stats), do: nil
 
   defp unknown(term), do: %{known: false, text: inspect(term)}
 

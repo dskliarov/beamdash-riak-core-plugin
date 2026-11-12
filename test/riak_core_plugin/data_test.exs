@@ -198,7 +198,11 @@ defmodule RiakCorePlugin.DataTest do
                start: "2025-10-25T13:46:40Z",
                sender: pid1(),
                size: {1000, :objects},
-               progress: 0.25
+               progress: 0.25,
+               objs_total: 10,
+               objs_per_s: 5,
+               bytes_per_s: 100,
+               eta_ms: 150_000
              }
     end
 
