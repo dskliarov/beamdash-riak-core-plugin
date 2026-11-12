@@ -97,6 +97,16 @@ defmodule RiakCorePlugin.RingLive do
             class={if match?({:ok, {:ok, _}}, @ready), do: "rcp-ok", else: "rcp-bad"}
           />
         </div>
+        <div :if={ring[:cluster_name]} class="rcp-meta">
+          <span>cluster <strong>{Data.cluster_key(ring.cluster_name)}</strong></span>
+          <span :if={ring[:ring_version]}>ring vclock
+          <strong>{ring_version_text(ring.ring_version)}</strong></span>
+          <span :if={ring[:ring_id]}>ring id <strong>{ring_id_text(ring.ring_id)}</strong></span>
+          <span :if={ring[:stable]}>ring <strong>{stable_text(ring.stable)}</strong></span>
+          <span :if={ring[:tainted]} class="rcp-bad">tainted</span>
+          <span :if={ring[:lastgasp]} class="rcp-bad">last gasp</span>
+          <span :if={ring[:resizing]}>resizing to <strong>{ring.future_size}</strong> partitions</span>
+        </div>
         <.claimant_note note={Data.claimant_note(ring.claimant, ring.members, ring[:up])} />
 
         <div :if={Data.down_owners(ring) != []} class="rcp-down-note" role="status">
@@ -441,6 +451,22 @@ defmodule RiakCorePlugin.RingLive do
     do: node not in up
 
   defp down_claimant?(_ring, _node), do: false
+
+  defp ring_version_text(vclock) when is_list(vclock) do
+    Enum.map_join(vclock, ", ", fn
+      {node, {counter, _timestamp}} -> "#{node}:#{counter}"
+      other -> inspect(other)
+    end)
+  end
+
+  defp ring_version_text(other), do: inspect(other)
+
+  defp ring_id_text({epoch, id}), do: "#{epoch}:#{id}"
+  defp ring_id_text(other), do: inspect(other)
+
+  defp stable_text({true, ms}) when is_integer(ms), do: "stable for #{Data.uptime(ms)}"
+  defp stable_text({false, ms}) when is_integer(ms), do: "changing for #{Data.uptime(ms)}"
+  defp stable_text(_), do: nil
 
   defp ready_text({:ok, {_status, text}}), do: text
   defp ready_text({:error, message}), do: message

@@ -135,38 +135,68 @@ defmodule RiakCorePlugin.Data do
     %{taken: Enum.take(sorted, cap), total: length(selected), modules: modules, module: module}
   end
 
-  @vnode_columns [:module, :index, :pid, :mailbox, :memory, :reductions]
+  @vnode_columns [:module, :index, :pid, :type, :mode, :mailbox, :memory, :reductions]
 
   @doc "The columns the vnodes table can be sorted by."
   def vnode_columns, do: @vnode_columns
 
   @doc """
-  The vnodes table from `[{{module, index, pid}, info}]`, where `info` is
-  `erlang:process_info(Pid, [message_queue_len, memory, reductions])` (or
-  `undefined` for a vnode that has exited). Sorted by `{column, :asc | :desc}`;
+  The vnodes table from `RiakCorePlugin.Riak.vnodes/2` rows (or the older
+  `{{module, index, pid}, info}` shape). Each row has `module`, `index`,
+  `pid`, `type`, `mode`, `target`, `mailbox`, `memory` and `reductions`.
+  `mode` is `:active`, `:forward`, `:handoff` or `:not_started`; `target` is
+  the forwarding or handoff node. Sorted by `{column, :asc | :desc}`;
   missing values always come last.
   """
-  @spec vnode_rows([{{module(), integer(), pid()}, list() | :undefined}], {atom(), :asc | :desc}) ::
-          [map()]
+  @spec vnode_rows([map() | {{module(), integer(), pid()}, list() | :undefined}], {
+          atom(),
+          :asc | :desc
+        }) :: [map()]
   def vnode_rows(fetched, {column, dir}) when column in @vnode_columns do
-    rows =
-      Enum.map(fetched, fn {{mod, idx, pid}, info} ->
-        info = if is_list(info), do: info, else: []
-
-        %{
-          module: mod,
-          index: idx,
-          pid: pid,
-          mailbox: info[:message_queue_len],
-          memory: info[:memory],
-          reductions: info[:reductions]
-        }
-      end)
+    rows = Enum.map(fetched, &vnode_row/1)
 
     {present, missing} = Enum.split_with(rows, &(Map.fetch!(&1, column) != nil))
     sorted = Enum.sort_by(present, &{Map.fetch!(&1, column), &1.module, &1.index}, dir)
     sorted ++ Enum.sort_by(missing, &{&1.module, &1.index})
   end
+
+  defp vnode_row(%{module: mod, index: idx, pid: pid} = row) do
+    info = if is_list(row[:info]), do: row[:info], else: []
+    {mode, target} = vnode_state(row)
+
+    %{
+      module: mod,
+      index: idx,
+      pid: pid,
+      type: row[:type],
+      mode: mode,
+      target: target,
+      mailbox: info[:message_queue_len],
+      memory: info[:memory],
+      reductions: info[:reductions]
+    }
+  end
+
+  defp vnode_row({{mod, idx, pid}, info}) do
+    info = if is_list(info), do: info, else: []
+
+    %{
+      module: mod,
+      index: idx,
+      pid: pid,
+      type: nil,
+      mode: nil,
+      target: nil,
+      mailbox: info[:message_queue_len],
+      memory: info[:memory],
+      reductions: info[:reductions]
+    }
+  end
+
+  defp vnode_state(%{forwarding: node}) when not is_nil(node), do: {:forward, node}
+  defp vnode_state(%{should_handoff: node}) when not is_nil(node), do: {:handoff, node}
+  defp vnode_state(%{pid: nil}), do: {:not_started, nil}
+  defp vnode_state(_row), do: {:active, nil}
 
   @doc """
   The active handoffs table from `riak_core_handoff_manager:status/0`. Each

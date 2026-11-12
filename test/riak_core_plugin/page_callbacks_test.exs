@@ -201,7 +201,10 @@ defmodule RiakCorePlugin.PageCallbacksTest do
     socket = event(socket, "filter", %{"module" => "b_vnode"})
     assert loading(socket) == [:vnodes]
     socket = await(socket, :vnodes)
-    assert {:ok, %{total: 1, fetched: [{{:b_vnode, 1, _}, _}]}} = socket.assigns.vnodes
+
+    assert {:ok, %{total: 1, fetched: [%{module: :b_vnode, index: 1, type: :primary}]}} =
+             socket.assigns.vnodes
+
     # the other module is still an option
     assert render(socket) =~ ~s(value="a_vnode")
 

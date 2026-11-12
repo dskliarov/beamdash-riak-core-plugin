@@ -48,7 +48,15 @@ defmodule RiakCorePlugin.Riak do
               {riak_core_ring:num_partitions(R), riak_core_ring:claimant(R),
                riak_core_ring:all_owners(R), riak_core_ring:pending_changes(R),
                riak_core_ring:all_member_status(R),
-               application:get_env(riak_core, target_n_val, 4)}
+               application:get_env(riak_core, target_n_val, 4),
+               riak_core_ring:cluster_name(R), riak_core_ring:ring_version(R),
+               riak_core_ring_manager:get_ring_id(),
+               riak_core_ring_manager:is_stable_ring(),
+               riak_core_ring:get_meta(riak_core_ring_tainted, R),
+               riak_core_ring:check_lastgasp(R),
+               riak_core_ring:is_resizing(R),
+               riak_core_ring:future_num_partitions(R),
+               riak_core_ring:is_resize_complete(R)}
               """)
 
   # For each partition whose owner isn't in `Up`: the fallback the owner's
@@ -112,7 +120,14 @@ defmodule RiakCorePlugin.Riak do
                    otp => list_to_binary(erlang:system_info(otp_release)),
                    uptime_ms => element(1, erlang:statistics(wall_clock)),
                    memory => erlang:memory(total),
-                   processes => erlang:system_info(process_count)}
+                   processes => erlang:system_info(process_count),
+                   run_queue => erlang:statistics(run_queue),
+                   ports => erlang:system_info(port_count),
+                   ets => erlang:system_info(ets_count),
+                   atoms => erlang:system_info(atom_count),
+                   context_switches => element(1, erlang:statistics(context_switches)),
+                   gc_count => element(1, erlang:statistics(garbage_collection)),
+                   connected => length(erlang:nodes(connected))}
                end)(node())
               """)
 
@@ -243,7 +258,10 @@ defmodule RiakCorePlugin.Riak do
   """
   @spec ring(GenServer.server(), keyword()) :: {:ok, map()} | {:error, String.t()}
   def ring(target, opts \\ []) do
-    with {:ok, {size, claimant, owners, pending, members, n_val}} <-
+    with {:ok,
+          {size, claimant, owners, pending, members, n_val, cluster_name, ring_version, ring_id,
+           stable, tainted_meta, lastgasp, resizing, future_size,
+           resize_complete}} <-
            eval_ring(target, @ring_exprs),
          {:ok, up} <- up_nodes(target),
          {:ok, fallbacks} <-
@@ -257,7 +275,16 @@ defmodule RiakCorePlugin.Riak do
          members: members,
          n_val: n_val,
          up: up,
-         fallbacks: fallbacks
+         fallbacks: fallbacks,
+         cluster_name: cluster_name,
+         ring_version: ring_version,
+         ring_id: ring_id,
+         stable: stable,
+         tainted: match?({:ok, true}, tainted_meta),
+         lastgasp: lastgasp,
+         resizing: resizing,
+         future_size: future_size,
+         resize_complete: resize_complete
        }}
     end
   end
@@ -355,29 +382,73 @@ defmodule RiakCorePlugin.Riak do
   def up_nodes(target), do: call(target, :erlang, :nodes, [[:this, :visible]])
 
   @doc """
-  The vnodes: `%{fetched: [{{module, index, pid}, info}], total, modules,
-  module}` (see `RiakCorePlugin.Data.select_vnodes/3`).
-  `riak_core_vnode_manager:all_vnodes/0` gives `[{Mod, Idx, Pid}]`. The
-  vnodes of `module` (`""` for all) are taken, and the first `max_vnodes/0`
-  of them (by module and index) get
-  `erlang:process_info(Pid, [message_queue_len, memory, reductions])`, all
-  in one rpc: `lists:zipwith/3` with the external fun
-  `fun erlang:process_info/2`, which travels by name.
+  The vnodes: `%{fetched: [row], total, modules, module}`. Rows are the
+  primary vnodes this node expects (including ones that have not started)
+  and any secondary vnode that is running here for a partition it does not
+  own, from `riak_core_vnode_manager:all_vnodes_status/0`: `module`,
+  `index`, `pid`, `type` (`:primary` | `:secondary`), `forwarding`,
+  `should_handoff` and `info` (process info). The first `max_vnodes/0` of
+  the selected module, by module and index, get
+  `erlang:process_info(Pid, [message_queue_len, memory, reductions])` in
+  one rpc: `lists:zipwith/3` with the external fun
+  `fun erlang:process_info/2`, which travels by name. A vnode without a
+  pid has `info: []`.
   """
   @spec vnodes(GenServer.server(), String.t()) :: {:ok, map()} | {:error, String.t()}
   def vnodes(target, module) do
-    with {:ok, all} <- call(target, :riak_core_vnode_manager, :all_vnodes, []),
-         selected = Data.select_vnodes(all, module, @max_vnodes),
-         pids = Enum.map(selected.taken, fn {_mod, _idx, pid} -> pid end),
-         items = List.duplicate([:message_queue_len, :memory, :reductions], length(pids)),
-         {:ok, infos} <- call(target, :lists, :zipwith, [&:erlang.process_info/2, pids, items]) do
-      {:ok,
-       %{
-         fetched: Enum.zip(selected.taken, infos),
-         total: selected.total,
-         modules: selected.modules,
-         module: selected.module
-       }}
+    with {:ok, statuses} <- call(target, :riak_core_vnode_manager, :all_vnodes_status, []) do
+      rows =
+        Enum.flat_map(statuses, fn {{mod, idx}, props} ->
+          type = props[:type]
+          pid = props[:pid]
+
+          if type == :primary or is_pid(pid) do
+            [
+              %{
+                module: mod,
+                index: idx,
+                pid: pid,
+                type: type,
+                forwarding: props[:forwarding],
+                should_handoff: props[:should_handoff]
+              }
+            ]
+          else
+            []
+          end
+        end)
+
+      modules = rows |> Enum.map(& &1.module) |> Enum.uniq() |> Enum.sort()
+      module = if Enum.any?(modules, &(Atom.to_string(&1) == module)), do: module, else: ""
+
+      selected =
+        if module == "",
+          do: rows,
+          else: Enum.filter(rows, &(Atom.to_string(&1.module) == module))
+
+      taken =
+        selected
+        |> Enum.sort_by(&{&1.module, &1.index})
+        |> Enum.take(@max_vnodes)
+
+      pids = for %{pid: pid} <- taken, is_pid(pid), do: pid
+
+      with {:ok, infos} <- process_infos(target, pids) do
+        fetched = Enum.map(taken, &Map.put(&1, :info, Map.get(infos, &1.pid, [])))
+
+        {:ok, %{fetched: fetched, total: length(selected), modules: modules, module: module}}
+      end
+    end
+  end
+
+  defp process_infos(_target, []), do: {:ok, %{}}
+
+  defp process_infos(target, pids) do
+    items = List.duplicate([:message_queue_len, :memory, :reductions], length(pids))
+
+    with {:ok, infos} <-
+           call(target, :lists, :zipwith, [&:erlang.process_info/2, pids, items]) do
+      {:ok, Map.new(Enum.zip(pids, infos))}
     end
   end
 

@@ -56,6 +56,14 @@ defmodule RiakCorePlugin.RiakTest do
     assert ring.pending == []
     assert ring.members == [{node, :valid}]
     assert node in ring.up
+    assert {^node, _} = ring.cluster_name
+    assert is_list(ring.ring_version)
+    assert ring.ring_id == {0, 0}
+    assert ring.stable == {true, 0}
+    refute ring.tainted
+    refute ring.lastgasp
+    refute ring.resizing
+    assert ring.future_size == 8
     # no owner is down: no fallbacks, and no rpc for them
     assert ring.fallbacks == %{}
     # riak_core's target_n_val (unset here: riak_core's default, 4) is the N
@@ -95,6 +103,10 @@ defmodule RiakCorePlugin.RiakTest do
     assert info.services == nil
     assert info.otp == System.otp_release()
     assert is_integer(info.uptime_ms) and is_integer(info.memory)
+    assert is_integer(info.run_queue)
+    assert is_integer(info.ports) and is_integer(info.ets)
+    assert is_integer(info.context_switches) and is_integer(info.gc_count)
+    assert is_integer(info.connected)
 
     [row] =
       Data.member_details(%{
@@ -171,15 +183,40 @@ defmodule RiakCorePlugin.RiakTest do
       assert all.total == 303
       assert length(all.fetched) == Riak.max_vnodes()
       # the first 256 by module and index: all a_vnode
-      assert Enum.all?(all.fetched, &match?({{:a_vnode, _, _}, _}, &1))
+      assert Enum.all?(all.fetched, &match?(%{module: :a_vnode, type: :primary}, &1))
 
       assert {:ok, b} = Riak.vnodes(target, "b_vnode")
       assert b.module == "b_vnode"
       assert b.total == 3
-      assert [{{:b_vnode, 1, _}, info} | _] = b.fetched
+      assert [%{module: :b_vnode, type: :primary, info: info} | _] = b.fetched
       assert length(b.fetched) == 3
       assert info[:message_queue_len] == 0
       assert info[:memory] > 0
+    end
+
+    test "primary vnodes without a pid and running secondaries are shown",
+         %{vnode_node: node} do
+      p1 = Peer.spawn_idle(node)
+      p2 = Peer.spawn_idle(node)
+
+      Peer.put(node, :rcp_vnode_status, [
+        {{:a_vnode, 0}, [type: :primary]},
+        {{:a_vnode, 1}, [type: :primary, pid: p1]},
+        {{:a_vnode, 2}, [type: :secondary]},
+        {{:a_vnode, 3}, [type: :secondary, pid: p2]},
+        {{:a_vnode, 4}, [type: :primary, pid: p1, forwarding: :b@h]},
+        {{:a_vnode, 5}, [type: :primary, pid: p1, should_handoff: :c@h]}
+      ])
+
+      assert {:ok, %{total: 5, fetched: rows}} = Riak.vnodes(target(node), "a_vnode")
+
+      assert [
+               %{index: 0, mode: :not_started, target: nil},
+               %{index: 1, mode: :active, target: nil},
+               %{index: 3, mode: :active, target: nil},
+               %{index: 4, mode: :forward, target: :b@h},
+               %{index: 5, mode: :handoff, target: :c@h}
+             ] = Data.vnode_rows(rows, {:index, :asc})
     end
 
     test "a filter that matches no module is dropped", %{vnode_node: node} do

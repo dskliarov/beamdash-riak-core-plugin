@@ -28,7 +28,16 @@ defmodule RiakCorePlugin.PagesTest do
     claimant: :a@h,
     owners: [{0, :a@h}, {1, :b@h}, {2, :a@h}, {3, :b@h}],
     pending: [{1, :b@h, :c@h, [:my_vnode], :awaiting}],
-    members: [{:a@h, :valid}, {:b@h, :leaving}]
+    members: [{:a@h, :valid}, {:b@h, :leaving}],
+    cluster_name: {:a@h, {1_761, 400_000, 0}},
+    ring_version: [{:a@h, {7, 1_761_400_000}}],
+    ring_id: {3, 42},
+    stable: {true, 2_500},
+    tainted: false,
+    lastgasp: false,
+    resizing: false,
+    future_size: 4,
+    resize_complete: true
   }
 
   test "the entry module declares the seven pages, the Ring page the main one" do
@@ -171,6 +180,9 @@ defmodule RiakCorePlugin.PagesTest do
     assert html =~ "4 partitions"
     assert html =~ "ready (2 nodes)"
     assert html =~ "c@h"
+    assert html =~ ~r/ring vclock\s*<strong>a@h:7<\/strong>/
+    assert html =~ "ring id <strong>3:42</strong>"
+    assert html =~ "stable for 2s"
 
     filtered =
       render(RingLive, %{
@@ -403,7 +415,10 @@ defmodule RiakCorePlugin.PagesTest do
       otp: "28",
       uptime_ms: 3_725_000,
       memory: 2_097_152,
-      processes: 99
+      processes: 99,
+      run_queue: 2,
+      ports: 14,
+      ets: 22
     }
 
     rows = [
@@ -432,15 +447,32 @@ defmodule RiakCorePlugin.PagesTest do
     assert html =~ "riak_core 0.11.0 · OTP 28"
     assert html =~ "1h 2m"
     assert html =~ "2.0 MB"
+    assert html =~ "runq 2 · 14 ports · 22 ETS"
     assert html =~ "— (down)"
-    assert html =~ ~s(<td colspan="8" class="rcp-error">no answer in time</td>)
+    assert html =~ ~s(<td colspan="9" class="rcp-error">no answer in time</td>)
     assert html =~ "<dt>Not owned</dt>"
   end
 
   test "vnodes" do
     fetched = [
-      {{:my_vnode, 0, pid()}, [message_queue_len: 7, memory: 2048, reductions: 99]},
-      {{:my_vnode, 1, pid()}, :undefined}
+      %{
+        module: :my_vnode,
+        index: 0,
+        pid: pid(),
+        type: :primary,
+        forwarding: nil,
+        should_handoff: nil,
+        info: [message_queue_len: 7, memory: 2048, reductions: 99]
+      },
+      %{
+        module: :my_vnode,
+        index: 1,
+        pid: nil,
+        type: :primary,
+        forwarding: nil,
+        should_handoff: nil,
+        info: []
+      }
     ]
 
     html =
@@ -464,7 +496,8 @@ defmodule RiakCorePlugin.PagesTest do
     assert filtered =~ "Showing the first 2 of 280 my_vnode vnodes"
     assert html =~ "&lt;0.101.0&gt;"
     assert html =~ "2.0 KB"
-    assert html =~ "exited"
+    assert html =~ "primary"
+    assert html =~ "not started"
     assert html =~ "▼"
   end
 

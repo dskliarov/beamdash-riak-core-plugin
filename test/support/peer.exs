@@ -9,12 +9,14 @@ defmodule RiakCorePlugin.Test.Peer do
   @fakes %{
     riak_core_ring_manager: """
     -module(riak_core_ring_manager).
-    -export([get_my_ring/0]).
+    -export([get_my_ring/0, get_ring_id/0, is_stable_ring/0]).
     get_my_ring() ->
         case persistent_term:get(rcp_ring, undefined) of
             undefined -> {error, no_ring};
             Ring -> {ok, Ring}
         end.
+    get_ring_id() -> persistent_term:get(rcp_ring_id, {0, 0}).
+    is_stable_ring() -> persistent_term:get(rcp_ring_stable, {true, 0}).
     """,
     riak_core_status: """
     -module(riak_core_status).
@@ -25,8 +27,15 @@ defmodule RiakCorePlugin.Test.Peer do
     """,
     riak_core_vnode_manager: """
     -module(riak_core_vnode_manager).
-    -export([all_vnodes/0]).
+    -export([all_vnodes/0, all_vnodes_status/0]).
     all_vnodes() -> persistent_term:get(rcp_vnodes, []).
+    all_vnodes_status() ->
+        case persistent_term:get(rcp_vnode_status, undefined) of
+            undefined ->
+                [{{M, I}, [{type, primary}, {pid, P}]}
+                 || {M, I, P} <- persistent_term:get(rcp_vnodes, [])];
+            Statuses -> Statuses
+        end.
     """,
     riak_core_handoff_manager: """
     -module(riak_core_handoff_manager).

@@ -144,6 +144,9 @@ defmodule RiakCorePlugin.DataTest do
                module: :a_vnode,
                index: 1,
                pid: pid2(),
+               type: nil,
+               mode: nil,
+               target: nil,
                mailbox: 9,
                memory: 500,
                reductions: 70
@@ -155,6 +158,54 @@ defmodule RiakCorePlugin.DataTest do
                [pid2(), pid1(), pid3()]
 
       assert Enum.map(Data.vnode_rows(fetched, {:module, :desc}), & &1.index) == [2, 1, 0]
+    end
+
+    test "vnode rows carry type and live state" do
+      fetched = [
+        %{
+          module: :a_vnode,
+          index: 0,
+          pid: pid1(),
+          type: :primary,
+          forwarding: nil,
+          should_handoff: nil,
+          info: [message_queue_len: 1, memory: 10, reductions: 2]
+        },
+        %{
+          module: :a_vnode,
+          index: 1,
+          pid: nil,
+          type: :primary,
+          forwarding: nil,
+          should_handoff: nil,
+          info: []
+        },
+        %{
+          module: :a_vnode,
+          index: 2,
+          pid: pid2(),
+          type: :secondary,
+          forwarding: :b@h,
+          should_handoff: nil,
+          info: []
+        },
+        %{
+          module: :a_vnode,
+          index: 3,
+          pid: pid3(),
+          type: :primary,
+          forwarding: nil,
+          should_handoff: :c@h,
+          info: []
+        }
+      ]
+
+      assert [
+               %{mode: :active, target: nil},
+               %{mode: :not_started, target: nil},
+               %{mode: :forward, target: :b@h},
+               %{mode: :handoff, target: :c@h}
+             ] = Data.vnode_rows(fetched, {:index, :asc})
     end
   end
 
