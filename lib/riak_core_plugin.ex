@@ -12,6 +12,7 @@ defmodule RiakCorePlugin do
     name: "riak_core",
     pages: [
       {"ring", "Ring", RiakCorePlugin.RingLive},
+      {"health", "Health", RiakCorePlugin.HealthLive},
       {"members", "Members", RiakCorePlugin.MembersLive},
       {"vnodes", "Vnodes", RiakCorePlugin.VnodesLive},
       {"load", "Load", RiakCorePlugin.LoadLive},

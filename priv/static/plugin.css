@@ -181,3 +181,19 @@ button.rcp-danger-solid { background: var(--error); color: #fff; border-color: v
   color: inherit;
   font-weight: 600;
 }
+
+.rcp-alerts {
+  list-style: none;
+  margin: 0.4rem 0;
+  padding: 0;
+}
+
+.rcp-alert {
+  padding: 0.35rem 0.6rem;
+  border-left: 3px solid currentColor;
+  margin: 0.25rem 0;
+}
+
+.rcp-warn {
+  color: var(--pending, #b8860b);
+}

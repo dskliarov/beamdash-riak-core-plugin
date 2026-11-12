@@ -83,6 +83,26 @@ defmodule RiakCorePlugin.Riak do
                    end)(1 bsl 160)
                   """)
 
+  # N replicas per partition among the up nodes: how many partitions have
+  # fewer than N of them, a bounded sample of those, and replicas per node.
+  @coverage_exprs parse.("""
+                  (fun(Up) ->
+                     N = application:get_env(riak_core, target_n_val, 4),
+                     Owners = riak_core_ring:all_owners(R),
+                     Pre = riak_core_ring:all_preflists(R, N),
+                     Per = [{Idx, lists:usort([Node || {_, Node} <- PL,
+                                                       lists:member(Node, Up)])}
+                            || {{Idx, _}, PL} <- lists:zip(Owners, Pre)],
+                     Under = [{Idx, Nodes} || {Idx, Nodes} <- Per, length(Nodes) < N],
+                     Load = lists:foldl(fun({_, Nodes}, D) ->
+                                lists:foldl(fun(Node, D2) ->
+                                                    orddict:update_counter(Node, 1, D2)
+                                            end, D, Nodes)
+                            end, orddict:new(), Per),
+                     {length(Owners), N, length(Under), lists:sublist(Under, 50), Load}
+                  end)(Up)
+                  """)
+
   @members_exprs parse.("""
                  {riak_core_ring:all_member_status(R),
                   lists:foldl(fun({_, N}, D) -> orddict:update_counter(N, 1, D) end,
@@ -308,6 +328,61 @@ defmodule RiakCorePlugin.Riak do
             {node, node != nil and MapSet.member?(Map.get(running, node, MapSet.new()), idx)}}
          end)}
       end
+    end
+  end
+
+  @doc """
+  Replica coverage: `%{partitions, n_val, under_count, under, replica_load,
+  up}`. For each partition, `riak_core_ring:all_preflists/2` gives its N
+  successors; only those the target sees up are counted, so a partition
+  with fewer than N unique up nodes is under-replicated. `under` is a
+  bounded sample of `{index, nodes}`, and `replica_load` counts replicas
+  per up node.
+  """
+  @spec coverage(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
+  def coverage(target) do
+    with {:ok, up} <- up_nodes(target),
+         {:ok, {partitions, n_val, under_count, under, replica_load}} <-
+           eval_ring(target, @coverage_exprs, [{:Up, up}]) do
+      {:ok,
+       %{
+         partitions: partitions,
+         n_val: n_val,
+         under_count: under_count,
+         under: under,
+         replica_load: replica_load,
+         up: up
+       }}
+    end
+  end
+
+  @doc """
+  `riak_core_status:ring_status/0`: claimant identity, whether the ring is
+  ready, down and marked-down members, and the per-transfer module status,
+  with a #{@ready_timeout} ms timeout because it calls every member.
+  """
+  @spec ring_status(GenServer.server()) :: {:ok, term()} | {:error, String.t()}
+  def ring_status(target) do
+    case Beamdash.Plugin.rpc(:riak_core_status, :ring_status, [], @ready_timeout, target: target) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, Data.error_message(reason)}
+    end
+  end
+
+  @doc "`riak_core_status:transfers/0`: down nodes and waiting/stopped partitions per node."
+  @spec transfers(GenServer.server()) :: {:ok, term()} | {:error, String.t()}
+  def transfers(target), do: call(target, :riak_core_status, :transfers, [])
+
+  @doc """
+  The Cluster Health view: `riak_core_status:ring_status/0`,
+  `transfers/0` and `coverage/1`, shaped by `RiakCorePlugin.Data.health/3`.
+  """
+  @spec health(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
+  def health(target) do
+    with {:ok, status} <- ring_status(target),
+         {:ok, transfers} <- transfers(target),
+         {:ok, coverage} <- coverage(target) do
+      {:ok, Data.health(status, transfers, coverage)}
     end
   end
 

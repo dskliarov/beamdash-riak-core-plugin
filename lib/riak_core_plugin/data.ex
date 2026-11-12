@@ -425,6 +425,87 @@ defmodule RiakCorePlugin.Data do
     |> Enum.map(&%{node: &1, before: Map.get(before, &1, 0), after: Map.get(after_, &1, 0)})
   end
 
+  @doc """
+  The Cluster Health view from `riak_core_status:ring_status/0`,
+  `transfers/0` and `RiakCorePlugin.Riak.coverage/1`:
+  `%{claimant, ring_ready, down, marked_down, transfer_status,
+  pending_transfers, waiting, stopped, coverage, alerts}`.
+  `alerts` are `%{level: :bad | :warn | :ok, text}`.
+  """
+  @spec health(term(), term(), map()) :: map()
+  def health(
+        {claimant, ring_ready, down, marked_down, transfer_status},
+        {_transfer_down, transfers},
+        coverage
+      ) do
+    waiting = for {:waiting_to_handoff, node, n} <- transfers, do: %{node: node, count: n}
+    stopped = for {:stopped, node, n} <- transfers, do: %{node: node, count: n}
+
+    pending =
+      for {{owner, next}, entries} <- transfer_status,
+          {index, waiting_modules, done_modules, status} <- entries do
+        %{
+          owner: owner,
+          next: next,
+          index: index,
+          waiting_modules: waiting_modules,
+          done_modules: done_modules,
+          status: status
+        }
+      end
+
+    %{
+      claimant: claimant,
+      ring_ready: ring_ready,
+      down: down,
+      marked_down: marked_down,
+      transfer_status: transfer_status,
+      transfers: pending,
+      pending_transfers: length(pending),
+      waiting: waiting,
+      stopped: stopped,
+      coverage: coverage,
+      alerts: health_alerts(ring_ready, down, marked_down, waiting, stopped, coverage)
+    }
+  end
+
+  defp health_alerts(ring_ready, down, marked_down, waiting, stopped, coverage) do
+    [
+      ring_ready == :undefined &&
+        %{level: :bad, text: "The claimant did not answer; ring state is unknown."},
+      ring_ready == false && %{level: :bad, text: "The ring is not ready."},
+      down != [] &&
+        %{level: :bad, text: "#{length(down)} member(s) are down: #{Enum.join(down, ", ")}."},
+      marked_down != [] &&
+        %{
+          level: :warn,
+          text:
+            "#{length(marked_down)} member(s) are marked down: #{Enum.join(marked_down, ", ")}."
+        },
+      coverage.under_count > 0 &&
+        %{
+          level: :bad,
+          text:
+            "#{coverage.under_count} partition(s) have fewer than #{coverage.n_val} up replicas."
+        },
+      waiting != [] &&
+        %{
+          level: :warn,
+          text: "Handoffs waiting: #{Enum.map_join(waiting, ", ", &"#{&1.node} #{&1.count}")}."
+        },
+      stopped != [] &&
+        %{
+          level: :bad,
+          text: "Handoffs stopped: #{Enum.map_join(stopped, ", ", &"#{&1.node} #{&1.count}")}."
+        }
+    ]
+    |> Enum.filter(& &1)
+    |> case do
+      [] -> [%{level: :ok, text: "No immediate ring-health warnings."}]
+      alerts -> alerts
+    end
+  end
+
   @admin_errors %{
     self_join: "a node can't join itself",
     not_reachable: "the node is not reachable from the attached node",

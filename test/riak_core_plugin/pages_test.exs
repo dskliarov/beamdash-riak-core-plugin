@@ -7,6 +7,7 @@ defmodule RiakCorePlugin.PagesTest do
   alias RiakCorePlugin.{
     AdminLive,
     HandoffsLive,
+    HealthLive,
     HistoryLive,
     LoadLive,
     MembersLive,
@@ -45,6 +46,7 @@ defmodule RiakCorePlugin.PagesTest do
 
     assert Enum.map(pages, & &1.slug) == [
              "ring",
+             "health",
              "members",
              "vnodes",
              "load",
@@ -166,6 +168,36 @@ defmodule RiakCorePlugin.PagesTest do
 
     assert render(MembersLive, %{members: {:error, "riak_core is not running"}}) =~
              "riak_core is not running"
+  end
+
+  @health %{
+    claimant: :a@h,
+    ring_ready: true,
+    down: [],
+    marked_down: [],
+    transfer_status: [],
+    transfers: [],
+    pending_transfers: 0,
+    waiting: [],
+    stopped: [],
+    coverage: %{
+      partitions: 4,
+      n_val: 4,
+      under_count: 0,
+      under: [],
+      replica_load: [{:a@h, 4}]
+    },
+    alerts: [%{level: :ok, text: "No immediate ring-health warnings."}]
+  }
+
+  test "health" do
+    html = render(HealthLive, %{health: {:ok, @health}})
+    assert html =~ "Ring ready"
+    assert html =~ "No immediate ring-health warnings."
+    assert html =~ "Replica coverage"
+    assert html =~ "N = 4"
+    assert html =~ "No waiting or stopped partitions."
+    assert html =~ "Nothing is transferring."
   end
 
   test "ring" do

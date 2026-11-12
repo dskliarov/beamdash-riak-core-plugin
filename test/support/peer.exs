@@ -20,10 +20,14 @@ defmodule RiakCorePlugin.Test.Peer do
     """,
     riak_core_status: """
     -module(riak_core_status).
-    -export([ringready/0]).
+    -export([ringready/0, ring_status/0, transfers/0]).
     ringready() ->
         timer:sleep(persistent_term:get(rcp_ready_sleep, 0)),
         persistent_term:get(rcp_ready, {ok, [node()]}).
+    ring_status() ->
+        persistent_term:get(rcp_ring_status,
+                            {node(), true, [], [], []}).
+    transfers() -> persistent_term:get(rcp_transfers, {[], []}).
     """,
     riak_core_vnode_manager: """
     -module(riak_core_vnode_manager).

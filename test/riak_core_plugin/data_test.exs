@@ -297,6 +297,45 @@ defmodule RiakCorePlugin.DataTest do
     end
   end
 
+  describe "health/3" do
+    test "shapes readiness, queue and coverage, and raises the warnings" do
+      health =
+        Data.health(
+          {:a@h, false, [:b@h], [:c@h], [{{:a@h, :b@h}, [{0, [:m], [], :waiting}]}]},
+          {:b@h, [{:waiting_to_handoff, :b@h, 2}, {:stopped, :c@h, 1}]},
+          %{
+            partitions: 4,
+            n_val: 4,
+            under_count: 1,
+            under: [{2, [:a@h]}],
+            replica_load: [{:a@h, 3}]
+          }
+        )
+
+      assert health.ring_ready == false
+      assert health.down == [:b@h]
+      assert health.marked_down == [:c@h]
+      assert health.pending_transfers == 1
+      assert health.waiting == [%{node: :b@h, count: 2}]
+      assert health.stopped == [%{node: :c@h, count: 1}]
+
+      assert Enum.map(health.alerts, & &1.level) == [:bad, :bad, :warn, :bad, :warn, :bad]
+      assert Enum.any?(health.alerts, &(&1.text =~ "not ready"))
+      assert Enum.any?(health.alerts, &(&1.text =~ "fewer than 4 up replicas"))
+    end
+
+    test "reports no warnings when the ring is healthy" do
+      health =
+        Data.health(
+          {:a@h, true, [], [], []},
+          {[], []},
+          %{partitions: 4, n_val: 4, under_count: 0, under: [], replica_load: [{:a@h, 4}]}
+        )
+
+      assert [%{level: :ok, text: "No immediate ring-health warnings."}] = health.alerts
+    end
+  end
+
   test "member_details/1: share, moves, the node's own answer and ring agreement" do
     m = %{
       members: [{:a@h, :valid}, {:b@h, :valid}, {:c@h, :down}],

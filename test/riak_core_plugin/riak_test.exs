@@ -120,6 +120,35 @@ defmodule RiakCorePlugin.RiakTest do
     assert row.ring_agrees and row.share == 100.0
   end
 
+  describe "coverage/1 and health/1" do
+    setup do
+      {peer, node} = Peer.start()
+      on_exit(fn -> Peer.stop(peer) end)
+      Peer.put(node, :rcp_ring, Peer.fresh_ring(node, 8))
+      %{node: node}
+    end
+
+    test "coverage counts only up preflist nodes", %{node: node} do
+      assert {:ok, coverage} = Riak.coverage(target(node))
+      assert coverage.partitions == 8
+      assert coverage.n_val == 4
+      # only the ring's owner is up for these preflists
+      assert coverage.under_count == 8
+      assert length(coverage.under) == 8
+      assert coverage.replica_load == [{node, 8}]
+    end
+
+    test "health combines readiness, transfers and coverage", %{node: node} do
+      assert {:ok, health} = Riak.health(target(node))
+      assert health.claimant == node
+      assert health.ring_ready == true
+      assert health.down == []
+      assert health.pending_transfers == 0
+      assert health.coverage.under_count == 8
+      assert Enum.any?(health.alerts, &(&1.text =~ "fewer than 4 up replicas"))
+    end
+  end
+
   test "up_nodes/1 is the target plus the nodes it sees", %{node: node} do
     assert {:ok, up} = Riak.up_nodes(target(node))
     assert node in up and node() in up

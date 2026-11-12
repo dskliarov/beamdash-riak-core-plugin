@@ -1,6 +1,6 @@
 # riak_core plugin for beamdash
 
-A [beamdash](https://github.com/dskliarov/beamdash) plugin that adds seven
+A [beamdash](https://github.com/dskliarov/beamdash) plugin that adds eight
 pages for riak_core and riak_core_lite, and keeps the cluster's history. It shows them in beamdash's Plugins
 menu while `riak_core ~> 0.10` runs on the attached node. The application
 name of riak_core_lite is `riak_core`.
@@ -43,6 +43,10 @@ beamdash's Nodes tab, and comes back to the same page
 (`Beamdash.Plugin.switch_path/2`). The node must be connected to the
 attached one; otherwise the Nodes tab says why it couldn't switch.
 
+- **Health**: ring readiness, claimant, down and marked-down members,
+  under-replicated partitions (N replicas among the up nodes), the handoff
+  queue and pending transfers, with the warnings worth acting on. It loads
+  every 30 s because `riak_core_status:ring_status/0` asks every member.
 - **Ring**: ring size, claimant and ring-ready state
   (`riak_core_status:ringready/0`), partitions per node, and the partition
   list (index, owner, and the next owner when a change is pending), with an
