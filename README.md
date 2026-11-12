@@ -1,6 +1,6 @@
 # riak_core plugin for beamdash
 
-A [beamdash](https://github.com/dskliarov/beamdash) plugin that adds seven
+A [beamdash](https://github.com/dskliarov/beamdash) plugin that adds eight
 pages for riak_core and riak_core_lite, and keeps the cluster's history. It shows them in beamdash's Plugins
 menu while `riak_core ~> 0.10` runs on the attached node. The application
 name of riak_core_lite is `riak_core`.
@@ -43,6 +43,14 @@ beamdash's Nodes tab, and comes back to the same page
 (`Beamdash.Plugin.switch_path/2`). The node must be connected to the
 attached one; otherwise the Nodes tab says why it couldn't switch.
 
+Module names (vnode modules, handoff and transfer modules, a process's
+initial call on the Load page) are links too: clicking one opens it on
+beamdash's Modules tab, when it is loaded on the attached node.
+
+- **Health**: ring readiness, claimant, down and marked-down members,
+  under-replicated partitions (N replicas among the up nodes), the handoff
+  queue and pending transfers, with the warnings worth acting on. It loads
+  every 30 s because `riak_core_status:ring_status/0` asks every member.
 - **Ring**: ring size, claimant and ring-ready state
   (`riak_core_status:ringready/0`), partitions per node, and the partition
   list (index, owner, and the next owner when a change is pending), with an
@@ -108,11 +116,20 @@ attached one; otherwise the Nodes tab says why it couldn't switch.
   type, module, partitions, from → to, direction, status, size or progress,
   start time and sender pid (a link to the process). Also the pending ownership changes
   (`riak_core_ring:pending_changes/1`). It shows "No handoffs" when both are
-  empty.
+  empty. It shows the handoff concurrency limit and whether inbound/outbound
+  handoffs are enabled, and can set the limit, pause/resume a direction
+  (pausing also kills that direction's running handoffs), kill all handoffs
+  or force handoffs. Pausing, killing, forcing and
+  setting the limit to zero ask for confirmation; each action is kept in
+  the history as what was done. There is no "refresh ring":
+  `riak_core_ring_manager:refresh_my_ring/0` is the last step of a node
+  leaving, and gives the node a fresh ring of its own, so it drops out of
+  its cluster.
 - **History**: what the plugin has kept of the attached node's cluster
   (see [History](#history)), one kind at a time, newest first, with a tab
   for each: **Handoffs** (each completed handoff: type, module,
-  partition, from → to, how long it took, its size when known), **Members**
+  partition, from → to, how long it took, its size when known, with a
+  completions-over-time chart), **Members**
   (status changes, a member going down or coming back up, joins and
   removals), **Ring** (claimant and ring size changes, partition transfers
   starting and finishing, ownership changing without transfers), **Load**
@@ -197,7 +214,11 @@ the same data as the Ring, Members, Handoffs and Load pages, as JSON, except
 that `riak_core.ring` leaves out the fallback nodes (the Ring page's Fallback
 column): finding them takes one more rpc. `riak_core.load` takes a 1-second
 sample when it is called, as the Load page does, so its rates are for that
-second. `riak_core.history` returns the cluster's history of one `kind`
+second. `riak_core.health` returns a readiness/coverage summary within 4 s;
+`riak_core.vnodes` returns expected/running vnode type and state
+(optionally for one `module`); `riak_core.handoff_stats` adds handoff
+throughput, ETA and the waiting/stopped queue; `riak_core.node` returns one
+member's services, versions and system pressure. `riak_core.history` returns the cluster's history of one `kind`
 (`handoffs`, `members`, `ring`, `load` or `admin`) over the last `minutes`
 (1440 by default), newest first, at most `limit` rows (50 by default, at
 most 500). Cluster changes (join, leave, commit) are not offered.

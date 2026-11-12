@@ -135,38 +135,68 @@ defmodule RiakCorePlugin.Data do
     %{taken: Enum.take(sorted, cap), total: length(selected), modules: modules, module: module}
   end
 
-  @vnode_columns [:module, :index, :pid, :mailbox, :memory, :reductions]
+  @vnode_columns [:module, :index, :pid, :type, :mode, :mailbox, :memory, :reductions]
 
   @doc "The columns the vnodes table can be sorted by."
   def vnode_columns, do: @vnode_columns
 
   @doc """
-  The vnodes table from `[{{module, index, pid}, info}]`, where `info` is
-  `erlang:process_info(Pid, [message_queue_len, memory, reductions])` (or
-  `undefined` for a vnode that has exited). Sorted by `{column, :asc | :desc}`;
+  The vnodes table from `RiakCorePlugin.Riak.vnodes/2` rows (or the older
+  `{{module, index, pid}, info}` shape). Each row has `module`, `index`,
+  `pid`, `type`, `mode`, `target`, `mailbox`, `memory` and `reductions`.
+  `mode` is `:active`, `:forward`, `:handoff` or `:not_started`; `target` is
+  the forwarding or handoff node. Sorted by `{column, :asc | :desc}`;
   missing values always come last.
   """
-  @spec vnode_rows([{{module(), integer(), pid()}, list() | :undefined}], {atom(), :asc | :desc}) ::
-          [map()]
+  @spec vnode_rows([map() | {{module(), integer(), pid()}, list() | :undefined}], {
+          atom(),
+          :asc | :desc
+        }) :: [map()]
   def vnode_rows(fetched, {column, dir}) when column in @vnode_columns do
-    rows =
-      Enum.map(fetched, fn {{mod, idx, pid}, info} ->
-        info = if is_list(info), do: info, else: []
-
-        %{
-          module: mod,
-          index: idx,
-          pid: pid,
-          mailbox: info[:message_queue_len],
-          memory: info[:memory],
-          reductions: info[:reductions]
-        }
-      end)
+    rows = Enum.map(fetched, &vnode_row/1)
 
     {present, missing} = Enum.split_with(rows, &(Map.fetch!(&1, column) != nil))
     sorted = Enum.sort_by(present, &{Map.fetch!(&1, column), &1.module, &1.index}, dir)
     sorted ++ Enum.sort_by(missing, &{&1.module, &1.index})
   end
+
+  defp vnode_row(%{module: mod, index: idx, pid: pid} = row) do
+    info = if is_list(row[:info]), do: row[:info], else: []
+    {mode, target} = vnode_state(row)
+
+    %{
+      module: mod,
+      index: idx,
+      pid: pid,
+      type: row[:type],
+      mode: mode,
+      target: target,
+      mailbox: info[:message_queue_len],
+      memory: info[:memory],
+      reductions: info[:reductions]
+    }
+  end
+
+  defp vnode_row({{mod, idx, pid}, info}) do
+    info = if is_list(info), do: info, else: []
+
+    %{
+      module: mod,
+      index: idx,
+      pid: pid,
+      type: nil,
+      mode: nil,
+      target: nil,
+      mailbox: info[:message_queue_len],
+      memory: info[:memory],
+      reductions: info[:reductions]
+    }
+  end
+
+  defp vnode_state(%{pid: nil}), do: {:not_started, nil}
+  defp vnode_state(%{forwarding: node}) when not is_nil(node), do: {:forward, node}
+  defp vnode_state(%{should_handoff: node}) when not is_nil(node), do: {:handoff, node}
+  defp vnode_state(_row), do: {:active, nil}
 
   @doc """
   The active handoffs table from `riak_core_handoff_manager:status/0`. Each
@@ -198,6 +228,8 @@ defmodule RiakCorePlugin.Data do
       end
 
     stats = if is_list(props[:stats]), do: props[:stats], else: []
+    size = size(stats[:size] || props[:size])
+    progress = progress(stats[:pct_done_decimal])
 
     %{
       known: true,
@@ -211,10 +243,33 @@ defmodule RiakCorePlugin.Data do
       status: props[:status],
       start: timestamp(props[:start_ts]),
       sender: props[:sender_pid],
-      size: size(stats[:size] || props[:size]),
-      progress: progress(stats[:pct_done_decimal])
+      size: size,
+      progress: progress,
+      objs_total: non_neg_int(stats[:objs_total]),
+      objs_per_s: non_neg_int(stats[:objs_per_s]),
+      bytes_per_s: non_neg_int(stats[:bytes_per_s]),
+      eta_ms: eta_ms(size, progress, stats)
     }
   end
+
+  defp non_neg_int(n) when is_integer(n) and n >= 0, do: n
+  defp non_neg_int(_), do: nil
+
+  # Remaining work at the reported rate; nil until the rate and size are known.
+  defp eta_ms({total, unit}, progress, stats)
+       when is_integer(total) and total > 0 and is_number(progress) and progress < 1 do
+    rate =
+      case unit do
+        :objects -> stats[:objs_per_s]
+        :bytes -> stats[:bytes_per_s]
+        _ -> nil
+      end
+
+    if is_number(rate) and rate > 0,
+      do: round(total * (1 - progress) / rate * 1000)
+  end
+
+  defp eta_ms(_size, _progress, _stats), do: nil
 
   defp unknown(term), do: %{known: false, text: inspect(term)}
 
@@ -370,6 +425,87 @@ defmodule RiakCorePlugin.Data do
     |> Enum.map(&%{node: &1, before: Map.get(before, &1, 0), after: Map.get(after_, &1, 0)})
   end
 
+  @doc """
+  The Cluster Health view from `riak_core_status:ring_status/0`,
+  `transfers/0` and `RiakCorePlugin.Riak.coverage/1`:
+  `%{claimant, ring_ready, down, marked_down, transfer_status,
+  pending_transfers, waiting, stopped, coverage, alerts}`.
+  `alerts` are `%{level: :bad | :warn | :ok, text}`.
+  """
+  @spec health(term(), term(), map()) :: map()
+  def health(
+        {claimant, ring_ready, down, marked_down, transfer_status},
+        {_transfer_down, transfers},
+        coverage
+      ) do
+    waiting = for {:waiting_to_handoff, node, n} <- transfers, do: %{node: node, count: n}
+    stopped = for {:stopped, node, n} <- transfers, do: %{node: node, count: n}
+
+    pending =
+      for {{owner, next}, entries} <- transfer_status,
+          {index, waiting_modules, done_modules, status} <- entries do
+        %{
+          owner: owner,
+          next: next,
+          index: index,
+          waiting_modules: waiting_modules,
+          done_modules: done_modules,
+          status: status
+        }
+      end
+
+    %{
+      claimant: claimant,
+      ring_ready: ring_ready,
+      down: down,
+      marked_down: marked_down,
+      transfer_status: transfer_status,
+      transfers: pending,
+      pending_transfers: length(pending),
+      waiting: waiting,
+      stopped: stopped,
+      coverage: coverage,
+      alerts: health_alerts(ring_ready, down, marked_down, waiting, stopped, coverage)
+    }
+  end
+
+  defp health_alerts(ring_ready, down, marked_down, waiting, stopped, coverage) do
+    [
+      ring_ready == :undefined &&
+        %{level: :bad, text: "The claimant did not answer; ring state is unknown."},
+      ring_ready == false && %{level: :bad, text: "The ring is not ready."},
+      down != [] &&
+        %{level: :bad, text: "#{length(down)} member(s) are down: #{Enum.join(down, ", ")}."},
+      marked_down != [] &&
+        %{
+          level: :warn,
+          text:
+            "#{length(marked_down)} member(s) are marked down: #{Enum.join(marked_down, ", ")}."
+        },
+      coverage.under_count > 0 &&
+        %{
+          level: :bad,
+          text:
+            "#{coverage.under_count} partition(s) have fewer than #{coverage.n_val} up replicas."
+        },
+      waiting != [] &&
+        %{
+          level: :warn,
+          text: "Handoffs waiting: #{Enum.map_join(waiting, ", ", &"#{&1.node} #{&1.count}")}."
+        },
+      stopped != [] &&
+        %{
+          level: :bad,
+          text: "Handoffs stopped: #{Enum.map_join(stopped, ", ", &"#{&1.node} #{&1.count}")}."
+        }
+    ]
+    |> Enum.filter(& &1)
+    |> case do
+      [] -> [%{level: :ok, text: "No immediate ring-health warnings."}]
+      alerts -> alerts
+    end
+  end
+
   @admin_errors %{
     self_join: "a node can't join itself",
     not_reachable: "the node is not reachable from the attached node",
@@ -380,7 +516,8 @@ defmodule RiakCorePlugin.Data do
     not_member: "it is not a member of the cluster",
     only_member: "it is the only member of the cluster",
     already_leaving: "it is already leaving",
-    is_claimant: "it is the claimant; it can't be force removed or force replaced",
+    is_claimant:
+      "it is the claimant; it can't be force removed or force replaced. If it is down, mark it down first: the role then moves to another member",
     is_up: "it is up; only a node that is down can be marked down",
     already_replacement: "it is already the replacement of another node",
     invalid_replacement: "the replacement must be a joining node that owns no partitions",
@@ -527,6 +664,7 @@ defmodule RiakCorePlugin.Data do
     %{
       pid: pid,
       name: process_name(info),
+      module: process_module(info),
       mailbox: if(is_list(info), do: info[:message_queue_len]),
       reductions_per_s: per_second(reductions, ms)
     }
@@ -541,6 +679,17 @@ defmodule RiakCorePlugin.Data do
       _ -> nil
     end
   end
+
+  # The module of the initial call, when that is what names the process.
+  defp process_module(info) when is_list(info) do
+    case {info[:registered_name], info[:initial_call]} do
+      {name, _} when is_atom(name) -> nil
+      {_, {m, _f, _a}} when is_atom(m) -> m
+      _ -> nil
+    end
+  end
+
+  defp process_module(_info), do: nil
 
   defp per_second(n, ms), do: if(ms > 0, do: round(n * 1000 / ms), else: 0)
 
@@ -910,6 +1059,7 @@ defmodule RiakCorePlugin.Data do
   defp history_row("handoffs", %{data: d} = row) do
     %{
       at: time_text(row.at),
+      at_ms: row.at,
       type: d["type"],
       module: d["module"],
       partition:

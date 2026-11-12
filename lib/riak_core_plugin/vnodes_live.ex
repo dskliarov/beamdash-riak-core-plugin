@@ -102,14 +102,23 @@ defmodule RiakCorePlugin.VnodesLive do
           </thead>
           <tbody>
             <tr :for={row <- Data.vnode_rows(vnodes.fetched, @sort)}>
-              <td>{row.module}</td>
+              <td><.module_link module={row.module} /></td>
               <td class="rcp-num rcp-mono">{row.index}</td>
               <td class="rcp-mono">
-                <.link navigate={Beamdash.Plugin.process_path(row.pid)} class="rcp-pid">
+                <.link
+                  :if={is_pid(row.pid)}
+                  navigate={Beamdash.Plugin.process_path(row.pid)}
+                  class="rcp-pid"
+                >
                   {Format.pid(row.pid, @syntax)}
                 </.link>
+                <span :if={is_nil(row.pid)} class="rcp-muted">—</span>
               </td>
-              <td class="rcp-num">{row.mailbox || "exited"}</td>
+              <td>{name(row.type)}</td>
+              <td>{state(row)}</td>
+              <td class="rcp-num">
+                {row.mailbox || if(row.mode == :not_started, do: "not started", else: "exited")}
+              </td>
               <td class="rcp-num">{row.memory && Format.bytes(row.memory)}</td>
               <td class="rcp-num">{row.reductions}</td>
             </tr>
@@ -126,11 +135,19 @@ defmodule RiakCorePlugin.VnodesLive do
       module: "Module",
       index: "Partition",
       pid: "Pid",
+      type: "Type",
+      mode: "State",
       mailbox: "Mailbox",
       memory: "Memory",
       reductions: "Reductions"
     ]
   end
+
+  defp state(%{mode: :not_started}), do: "not started"
+  defp state(%{mode: :forward, target: node}), do: "forward → #{name(node)}"
+  defp state(%{mode: :handoff, target: node}), do: "handoff → #{name(node)}"
+  defp state(%{mode: :active}), do: "active"
+  defp state(_row), do: ""
 
   defp arrow({col, :asc}, col), do: " ▲"
   defp arrow({col, :desc}, col), do: " ▼"

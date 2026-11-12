@@ -7,6 +7,7 @@ defmodule RiakCorePlugin.PagesTest do
   alias RiakCorePlugin.{
     AdminLive,
     HandoffsLive,
+    HealthLive,
     HistoryLive,
     LoadLive,
     MembersLive,
@@ -17,7 +18,15 @@ defmodule RiakCorePlugin.PagesTest do
   defp pid, do: :c.pid(0, 101, 0)
 
   defp render(module, assigns) do
-    %{__changed__: nil, node: :a@h, syntax: :erlang}
+    %{
+      __changed__: nil,
+      node: :a@h,
+      syntax: :erlang,
+      note: nil,
+      note_at: nil,
+      busy: false,
+      confirm: nil
+    }
     |> Map.merge(assigns)
     |> module.render()
     |> rendered_to_string()
@@ -28,7 +37,16 @@ defmodule RiakCorePlugin.PagesTest do
     claimant: :a@h,
     owners: [{0, :a@h}, {1, :b@h}, {2, :a@h}, {3, :b@h}],
     pending: [{1, :b@h, :c@h, [:my_vnode], :awaiting}],
-    members: [{:a@h, :valid}, {:b@h, :leaving}]
+    members: [{:a@h, :valid}, {:b@h, :leaving}],
+    cluster_name: {:a@h, {1_761, 400_000, 0}},
+    ring_version: [{:a@h, {7, 1_761_400_000}}],
+    ring_id: {3, 42},
+    stable: {true, 2_500},
+    tainted: false,
+    lastgasp: false,
+    resizing: false,
+    future_size: 4,
+    resize_complete: true
   }
 
   test "the entry module declares the seven pages, the Ring page the main one" do
@@ -36,6 +54,7 @@ defmodule RiakCorePlugin.PagesTest do
 
     assert Enum.map(pages, & &1.slug) == [
              "ring",
+             "health",
              "members",
              "vnodes",
              "load",
@@ -96,6 +115,7 @@ defmodule RiakCorePlugin.PagesTest do
       assert html =~ "2025-10-25 13:46:40 UTC"
       assert html =~ "a@h → b@h"
       assert html =~ "5s"
+      assert html =~ ~s(aria-label="Completed handoffs over time")
 
       admin =
         RiakCorePlugin.Data.history_rows("admin", [
@@ -159,6 +179,145 @@ defmodule RiakCorePlugin.PagesTest do
              "riak_core is not running"
   end
 
+  @health %{
+    claimant: :a@h,
+    ring_ready: true,
+    down: [],
+    marked_down: [],
+    transfer_status: [],
+    transfers: [],
+    pending_transfers: 0,
+    waiting: [],
+    stopped: [],
+    coverage: %{
+      partitions: 4,
+      n_val: 4,
+      under_count: 0,
+      under: [],
+      replica_load: [{:a@h, 4}]
+    },
+    alerts: [%{level: :ok, text: "No immediate ring-health warnings."}]
+  }
+
+  test "health" do
+    html = render(HealthLive, %{health: {:ok, @health}})
+    assert html =~ "Ring ready"
+    assert html =~ "No immediate ring-health warnings."
+    assert html =~ "Replica coverage"
+    assert html =~ "N = 4"
+    assert html =~ "No waiting or stopped partitions."
+    assert html =~ "Nothing is transferring."
+  end
+
+  describe "modules link to beamdash's Modules tab" do
+    defp module_href(name), do: ~s(href="/modules?module=#{URI.encode_www_form(name)}")
+
+    test "module_path: atoms and stored names; nothing for what isn't a module" do
+      import RiakCorePlugin.Components, only: [module_path: 1]
+      assert module_path(:kv_vnode) == "/modules?module=kv_vnode"
+      assert module_path(MyApp.Vnode) == "/modules?module=Elixir.MyApp.Vnode"
+      assert module_path("Elixir.MyApp.Vnode") == "/modules?module=Elixir.MyApp.Vnode"
+
+      for not_one <- [nil, :undefined, true, "", 3],
+          do: assert(module_path(not_one) == nil)
+    end
+
+    test "vnodes, handoffs and the pending changes' modules" do
+      fetched = [
+        %{
+          module: MyApp.Vnode,
+          index: 0,
+          pid: pid(),
+          type: :primary,
+          forwarding: nil,
+          should_handoff: nil,
+          info: [message_queue_len: 0, memory: 0, reductions: 0]
+        }
+      ]
+
+      html =
+        render(VnodesLive, %{
+          vnodes: {:ok, %{fetched: fetched, total: 1, modules: [MyApp.Vnode], module: ""}},
+          sort: {:mailbox, :desc},
+          module: ""
+        })
+
+      assert html =~ ~s(<a #{module_href("Elixir.MyApp.Vnode")})
+
+      handoff =
+        {:status_v2,
+         [
+           mod: :kv_vnode,
+           src_partition: 0,
+           target_partition: 0,
+           src_node: :a@h,
+           target_node: :b@h
+         ]}
+
+      html =
+        render(HandoffsLive, %{
+          handoffs:
+            {:ok,
+             %{
+               active: [handoff],
+               pending: [{1, :a@h, :b@h, [:kv_vnode, :x_vnode], :awaiting}],
+               settings: %{concurrency: 2, inbound: true, outbound: true, cluster: "c"}
+             }},
+          busy: false,
+          note: nil,
+          confirm: nil
+        })
+
+      assert html =~ module_href("kv_vnode")
+      assert html =~ module_href("x_vnode")
+    end
+
+    test "health's waiting and done modules; history's handoff module; load's initial call" do
+      transfer = %{
+        owner: :a@h,
+        next: :b@h,
+        index: 0,
+        waiting_modules: [:x_vnode],
+        done_modules: [:kv_vnode],
+        status: :awaiting
+      }
+
+      html =
+        render(HealthLive, %{
+          health: {:ok, %{@health | transfer_status: [transfer], transfers: [transfer]}}
+        })
+
+      assert html =~ module_href("x_vnode")
+      assert html =~ module_href("kv_vnode")
+
+      rows =
+        RiakCorePlugin.Data.history_rows("handoffs", [
+          %{at: 0, data: %{"module" => "Elixir.MyApp.Vnode", "src_partition" => 0}}
+        ])
+
+      html =
+        render(HistoryLive, %{
+          kind: "handoffs",
+          history: {:ok, %{kind: "handoffs", cluster: "c", rows: rows}}
+        })
+
+      assert html =~ module_href("Elixir.MyApp.Vnode")
+    end
+  end
+
+  test "health: the up replicas of an under-replicated partition are a list of node links" do
+    coverage = %{@health.coverage | under_count: 2, under: [{0, [:a@h, :b@h]}, {1, []}]}
+    html = render(HealthLive, %{health: {:ok, %{@health | coverage: coverage}}})
+
+    assert html =~ ~r/2 of 4/
+    assert html =~ ~r/0 of 4/
+    assert [list] = Regex.run(~r/<ul class="rcp-node-list">.*?<\/ul>/s, html)
+    # a@h is the attached node (plain text), b@h a link that switches beamdash to it
+    assert list =~ ~r/<li>\s*<span>a@h<\/span>/
+    assert list =~ ~r/<li>\s*<a[^>]*class="rcp-node"[^>]*>b@h<\/a>/
+    assert html =~ ~s(<span class="rcp-bad">none</span>)
+  end
+
   test "ring" do
     html =
       render(RingLive, %{
@@ -171,6 +330,9 @@ defmodule RiakCorePlugin.PagesTest do
     assert html =~ "4 partitions"
     assert html =~ "ready (2 nodes)"
     assert html =~ "c@h"
+    assert html =~ ~r/ring vclock\s*<strong>a@h:7<\/strong>/
+    assert html =~ "ring id <strong>3:42</strong>"
+    assert html =~ "stable for 2s"
 
     filtered =
       render(RingLive, %{
@@ -403,7 +565,10 @@ defmodule RiakCorePlugin.PagesTest do
       otp: "28",
       uptime_ms: 3_725_000,
       memory: 2_097_152,
-      processes: 99
+      processes: 99,
+      run_queue: 2,
+      ports: 14,
+      ets: 22
     }
 
     rows = [
@@ -432,15 +597,32 @@ defmodule RiakCorePlugin.PagesTest do
     assert html =~ "riak_core 0.11.0 · OTP 28"
     assert html =~ "1h 2m"
     assert html =~ "2.0 MB"
+    assert html =~ "runq 2 · 14 ports · 22 ETS"
     assert html =~ "— (down)"
-    assert html =~ ~s(<td colspan="8" class="rcp-error">no answer in time</td>)
+    assert html =~ ~s(<td colspan="9" class="rcp-error">no answer in time</td>)
     assert html =~ "<dt>Not owned</dt>"
   end
 
   test "vnodes" do
     fetched = [
-      {{:my_vnode, 0, pid()}, [message_queue_len: 7, memory: 2048, reductions: 99]},
-      {{:my_vnode, 1, pid()}, :undefined}
+      %{
+        module: :my_vnode,
+        index: 0,
+        pid: pid(),
+        type: :primary,
+        forwarding: nil,
+        should_handoff: nil,
+        info: [message_queue_len: 7, memory: 2048, reductions: 99]
+      },
+      %{
+        module: :my_vnode,
+        index: 1,
+        pid: nil,
+        type: :primary,
+        forwarding: nil,
+        should_handoff: nil,
+        info: []
+      }
     ]
 
     html =
@@ -464,7 +646,8 @@ defmodule RiakCorePlugin.PagesTest do
     assert filtered =~ "Showing the first 2 of 280 my_vnode vnodes"
     assert html =~ "&lt;0.101.0&gt;"
     assert html =~ "2.0 KB"
-    assert html =~ "exited"
+    assert html =~ "primary"
+    assert html =~ "not started"
     assert html =~ "▼"
   end
 
@@ -489,8 +672,10 @@ defmodule RiakCorePlugin.PagesTest do
     assert html =~ "1: 75.0%"
     assert html =~ "2.0 KB/s"
     assert html =~ "4.0 KB"
+    # the initial call's module links to the Modules tab; an exited process doesn't
+    assert html =~ ~s(<a href="/modules?module=gen_server")
     assert html =~ ":gen_server.loop/7"
-    assert html =~ "exited"
+    assert html =~ ~r/<span>exited<\/span>/
     assert html =~ "rcp-bar-fill"
 
     assert render(LoadLive, %{load: {:error, "riak_core is not running"}}) =~
@@ -498,8 +683,11 @@ defmodule RiakCorePlugin.PagesTest do
   end
 
   test "handoffs" do
-    assert render(HandoffsLive, %{handoffs: {:ok, %{active: [], pending: []}}}) =~
-             "No handoffs"
+    settings = %{concurrency: 2, inbound: true, outbound: true, cluster: "a@h t"}
+
+    assert render(HandoffsLive, %{
+             handoffs: {:ok, %{active: [], pending: [], settings: settings}}
+           }) =~ "No handoffs"
 
     active = [
       {:status_v2,
@@ -519,7 +707,11 @@ defmodule RiakCorePlugin.PagesTest do
       :odd
     ]
 
-    html = render(HandoffsLive, %{handoffs: {:ok, %{active: active, pending: @ring.pending}}})
+    html =
+      render(HandoffsLive, %{
+        handoffs: {:ok, %{active: active, pending: @ring.pending, settings: settings}}
+      })
+
     assert html =~ "hinted"
     # the attached node (a@h) is plain text, other nodes switch beamdash
     assert html =~ ~r{<span>a@h</span> →\s*<a href="/nodes\?switch=b%40h"[^>]*>b@h</a>}
@@ -533,7 +725,11 @@ defmodule RiakCorePlugin.PagesTest do
     assert html =~ "&lt;0.101.0&gt;"
 
     # an odd pending entry's text is shown once, not inspected again
-    html = render(HandoffsLive, %{handoffs: {:ok, %{active: [], pending: [:odd]}}})
+    html =
+      render(HandoffsLive, %{
+        handoffs: {:ok, %{active: [], pending: [:odd], settings: settings}}
+      })
+
     assert html =~ ":odd"
     refute html =~ "&quot;:odd&quot;"
   end

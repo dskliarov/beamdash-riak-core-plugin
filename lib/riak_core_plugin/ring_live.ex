@@ -84,12 +84,14 @@ defmodule RiakCorePlugin.RingLive do
     <div class="rcp-page">
       <.header title="Ring" node={@node} refresh="refreshes every 5 s; ring readiness every 30 s" />
       <.result :let={ring} node={@node} result={@ring}>
+        <% down_nodes = Data.down_owners(ring) %>
+        <% down = MapSet.new(down_nodes) %>
         <div class="rcp-cards">
           <.card label="Ring size" value={"#{ring.size} partitions"} />
           <.card
             label="Claimant"
-            value={name(ring.claimant) <> if(down?(ring, ring.claimant), do: " (down)", else: "")}
-            class={down?(ring, ring.claimant) && "rcp-bad"}
+            value={name(ring.claimant) <> if(down?(down, ring, ring.claimant), do: " (down)", else: "")}
+            class={down?(down, ring, ring.claimant) && "rcp-bad"}
           />
           <.card
             label="Ring ready"
@@ -97,10 +99,23 @@ defmodule RiakCorePlugin.RingLive do
             class={if match?({:ok, {:ok, _}}, @ready), do: "rcp-ok", else: "rcp-bad"}
           />
         </div>
+        <div :if={ring[:cluster_name]} class="rcp-meta">
+          <span>cluster <strong>{Data.cluster_key(ring.cluster_name)}</strong></span>
+          <span :if={ring[:ring_version]}>ring vclock
+          <strong>{ring_version_text(ring.ring_version)}</strong></span>
+          <span :if={ring[:ring_id]}>ring id <strong>{ring_id_text(ring.ring_id)}</strong></span>
+          <span :if={ring[:stable]}>ring <strong>{stable_text(ring.stable)}</strong></span>
+          <span :if={ring[:tainted]} class="rcp-bad">tainted</span>
+          <span :if={ring[:lastgasp]} class="rcp-bad">last gasp</span>
+          <span :if={ring[:resizing]}>resizing to <strong>{ring.future_size}</strong> partitions</span>
+        </div>
+        <p :if={ring[:fallback_error]} class="rcp-error">
+          Fallback lookup failed: {ring.fallback_error}. Ownership and pending changes are still shown.
+        </p>
         <.claimant_note note={Data.claimant_note(ring.claimant, ring.members, ring[:up])} />
 
-        <div :if={Data.down_owners(ring) != []} class="rcp-down-note" role="status">
-          <p :for={node <- Data.down_owners(ring)}>
+        <div :if={down_nodes != []} class="rcp-down-note" role="status">
+          <p :for={node <- down_nodes}>
             <strong>{node}</strong>
             is down. It still owns its {Enum.count(ring.owners, &(elem(&1, 1) == node))} partitions: riak_core doesn't move
             ownership when a node goes down. Fallback vnodes on the other nodes serve them until it is back.
@@ -150,7 +165,7 @@ defmodule RiakCorePlugin.RingLive do
                     return={page_path(assigns, "ring")}
                     claimant={node == ring.claimant}
                   />
-                  <span :if={down?(ring, node)} class="rcp-down">down</span>
+                  <span :if={down?(down, ring, node)} class="rcp-down">down</span>
                 </td>
                 <td class="rcp-num">{count}</td>
               </tr>
@@ -219,7 +234,7 @@ defmodule RiakCorePlugin.RingLive do
                     return={page_path(assigns, "ring")}
                     claimant={row.owner == ring.claimant}
                   />
-                  <span :if={down?(ring, row.owner)} class="rcp-down">down</span>
+                  <span :if={down?(down, ring, row.owner)} class="rcp-down">down</span>
                 </td>
                 <td class={row.next && "rcp-pending"}>
                   <.node_link
@@ -434,13 +449,29 @@ defmodule RiakCorePlugin.RingLive do
       end
   end
 
-  defp down?(ring, node), do: node in Data.down_owners(ring) or down_claimant?(ring, node)
+  defp down?(down, ring, node), do: MapSet.member?(down, node) or down_claimant?(ring, node)
 
   # the claimant may own nothing (a fresh member)
   defp down_claimant?(%{claimant: node, up: up}, node) when is_list(up) and node != :undefined,
     do: node not in up
 
   defp down_claimant?(_ring, _node), do: false
+
+  defp ring_version_text(vclock) when is_list(vclock) do
+    Enum.map_join(vclock, ", ", fn
+      {node, {counter, _timestamp}} -> "#{node}:#{counter}"
+      other -> inspect(other)
+    end)
+  end
+
+  defp ring_version_text(other), do: inspect(other)
+
+  defp ring_id_text({epoch, id}), do: "#{epoch}:#{id}"
+  defp ring_id_text(other), do: inspect(other)
+
+  defp stable_text({true, ms}) when is_integer(ms), do: "stable for #{Data.uptime(ms)}"
+  defp stable_text({false, ms}) when is_integer(ms), do: "changing for #{Data.uptime(ms)}"
+  defp stable_text(_), do: nil
 
   defp ready_text({:ok, {_status, text}}), do: text
   defp ready_text({:error, message}), do: message

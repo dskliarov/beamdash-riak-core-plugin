@@ -48,7 +48,15 @@ defmodule RiakCorePlugin.Riak do
               {riak_core_ring:num_partitions(R), riak_core_ring:claimant(R),
                riak_core_ring:all_owners(R), riak_core_ring:pending_changes(R),
                riak_core_ring:all_member_status(R),
-               application:get_env(riak_core, target_n_val, 4)}
+               application:get_env(riak_core, target_n_val, 4),
+               riak_core_ring:cluster_name(R), riak_core_ring:ring_version(R),
+               riak_core_ring_manager:get_ring_id(),
+               riak_core_ring_manager:is_stable_ring(),
+               riak_core_ring:get_meta(riak_core_ring_tainted, R),
+               riak_core_ring:check_lastgasp(R),
+               riak_core_ring:is_resizing(R),
+               riak_core_ring:future_num_partitions(R),
+               riak_core_ring:is_resize_complete(R)}
               """)
 
   # For each partition whose owner isn't in `Up`: the fallback the owner's
@@ -73,6 +81,26 @@ defmodule RiakCorePlugin.Riak do
                                                           all_vnodes, [], 5000))],
                      {Fallbacks, Running}
                    end)(1 bsl 160)
+                  """)
+
+  # N replicas per partition among the up nodes: how many partitions have
+  # fewer than N of them, a bounded sample of those, and replicas per node.
+  @coverage_exprs parse.("""
+                  (fun(Up) ->
+                     N = application:get_env(riak_core, target_n_val, 4),
+                     Owners = riak_core_ring:all_owners(R),
+                     Pre = riak_core_ring:all_preflists(R, N),
+                     Per = [{Idx, lists:usort([Node || {_, Node} <- PL,
+                                                       lists:member(Node, Up)])}
+                            || {{Idx, _}, PL} <- lists:zip(Owners, Pre)],
+                     Under = [{Idx, Nodes} || {Idx, Nodes} <- Per, length(Nodes) < N],
+                     Load = lists:foldl(fun({_, Nodes}, D) ->
+                                lists:foldl(fun(Node, D2) ->
+                                                    orddict:update_counter(Node, 1, D2)
+                                            end, D, Nodes)
+                            end, orddict:new(), Per),
+                     {length(Owners), N, length(Under), lists:sublist(Under, 50), Load}
+                  end)(Up)
                   """)
 
   @members_exprs parse.("""
@@ -112,7 +140,14 @@ defmodule RiakCorePlugin.Riak do
                    otp => list_to_binary(erlang:system_info(otp_release)),
                    uptime_ms => element(1, erlang:statistics(wall_clock)),
                    memory => erlang:memory(total),
-                   processes => erlang:system_info(process_count)}
+                   processes => erlang:system_info(process_count),
+                   run_queue => erlang:statistics(run_queue),
+                   ports => erlang:system_info(port_count),
+                   ets => erlang:system_info(ets_count),
+                   atoms => erlang:system_info(atom_count),
+                   context_switches => element(1, erlang:statistics(context_switches)),
+                   gc_count => element(1, erlang:statistics(garbage_collection)),
+                   connected => length(erlang:nodes(connected))}
                end)(node())
               """)
 
@@ -243,11 +278,17 @@ defmodule RiakCorePlugin.Riak do
   """
   @spec ring(GenServer.server(), keyword()) :: {:ok, map()} | {:error, String.t()}
   def ring(target, opts \\ []) do
-    with {:ok, {size, claimant, owners, pending, members, n_val}} <-
+    with {:ok,
+          {size, claimant, owners, pending, members, n_val, cluster_name, ring_version, ring_id,
+           stable, tainted_meta, lastgasp, resizing, future_size, resize_complete}} <-
            eval_ring(target, @ring_exprs),
-         {:ok, up} <- up_nodes(target),
-         {:ok, fallbacks} <-
-           fallbacks(target, owners, up, n_val, Keyword.get(opts, :fallbacks, true)) do
+         {:ok, up} <- up_nodes(target) do
+      {fallbacks, fallback_error} =
+        case fallbacks(target, owners, up, n_val, Keyword.get(opts, :fallbacks, true)) do
+          {:ok, value} -> {value, nil}
+          {:error, message} -> {nil, message}
+        end
+
       {:ok,
        %{
          size: size,
@@ -257,7 +298,17 @@ defmodule RiakCorePlugin.Riak do
          members: members,
          n_val: n_val,
          up: up,
-         fallbacks: fallbacks
+         fallbacks: fallbacks,
+         fallback_error: fallback_error,
+         cluster_name: cluster_name,
+         ring_version: ring_version,
+         ring_id: ring_id,
+         stable: stable,
+         tainted: match?({:ok, true}, tainted_meta),
+         lastgasp: lastgasp,
+         resizing: resizing,
+         future_size: future_size,
+         resize_complete: resize_complete
        }}
     end
   end
@@ -281,6 +332,61 @@ defmodule RiakCorePlugin.Riak do
             {node, node != nil and MapSet.member?(Map.get(running, node, MapSet.new()), idx)}}
          end)}
       end
+    end
+  end
+
+  @doc """
+  Replica coverage: `%{partitions, n_val, under_count, under, replica_load,
+  up}`. For each partition, `riak_core_ring:all_preflists/2` gives its N
+  successors; only those the target sees up are counted, so a partition
+  with fewer than N unique up nodes is under-replicated. `under` is a
+  bounded sample of `{index, nodes}`, and `replica_load` counts replicas
+  per up node.
+  """
+  @spec coverage(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
+  def coverage(target) do
+    with {:ok, up} <- up_nodes(target),
+         {:ok, {partitions, n_val, under_count, under, replica_load}} <-
+           eval_ring(target, @coverage_exprs, [{:Up, up}]) do
+      {:ok,
+       %{
+         partitions: partitions,
+         n_val: n_val,
+         under_count: under_count,
+         under: under,
+         replica_load: replica_load,
+         up: up
+       }}
+    end
+  end
+
+  @doc """
+  `riak_core_status:ring_status/0`: claimant identity, whether the ring is
+  ready, down and marked-down members, and the per-transfer module status,
+  with a #{@ready_timeout} ms timeout because it calls every member.
+  """
+  @spec ring_status(GenServer.server()) :: {:ok, term()} | {:error, String.t()}
+  def ring_status(target) do
+    case Beamdash.Plugin.rpc(:riak_core_status, :ring_status, [], @ready_timeout, target: target) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, Data.error_message(reason)}
+    end
+  end
+
+  @doc "`riak_core_status:transfers/0`: down nodes and waiting/stopped partitions per node."
+  @spec transfers(GenServer.server()) :: {:ok, term()} | {:error, String.t()}
+  def transfers(target), do: call(target, :riak_core_status, :transfers, [])
+
+  @doc """
+  The Cluster Health view: `riak_core_status:ring_status/0`,
+  `transfers/0` and `coverage/1`, shaped by `RiakCorePlugin.Data.health/3`.
+  """
+  @spec health(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
+  def health(target) do
+    with {:ok, status} <- ring_status(target),
+         {:ok, transfers} <- transfers(target),
+         {:ok, coverage} <- coverage(target) do
+      {:ok, Data.health(status, transfers, coverage)}
     end
   end
 
@@ -355,29 +461,76 @@ defmodule RiakCorePlugin.Riak do
   def up_nodes(target), do: call(target, :erlang, :nodes, [[:this, :visible]])
 
   @doc """
-  The vnodes: `%{fetched: [{{module, index, pid}, info}], total, modules,
-  module}` (see `RiakCorePlugin.Data.select_vnodes/3`).
-  `riak_core_vnode_manager:all_vnodes/0` gives `[{Mod, Idx, Pid}]`. The
-  vnodes of `module` (`""` for all) are taken, and the first `max_vnodes/0`
-  of them (by module and index) get
-  `erlang:process_info(Pid, [message_queue_len, memory, reductions])`, all
-  in one rpc: `lists:zipwith/3` with the external fun
-  `fun erlang:process_info/2`, which travels by name.
+  The vnodes: `%{fetched: [row], total, modules, module}`. Rows are the
+  primary vnodes this node expects (including ones that have not started)
+  and any secondary vnode that is running here for a partition it does not
+  own, from `riak_core_vnode_manager:all_vnodes_status/0`: `module`,
+  `index`, `pid`, `type` (`:primary` | `:secondary`), `forwarding`,
+  `should_handoff` and `info` (process info). The first `max_vnodes/0` of
+  the selected module, by module and index, get
+  `erlang:process_info(Pid, [message_queue_len, memory, reductions])` in
+  one rpc: `lists:zipwith/3` with the external fun
+  `fun erlang:process_info/2`, which travels by name. A vnode without a
+  pid has `info: []`.
   """
   @spec vnodes(GenServer.server(), String.t()) :: {:ok, map()} | {:error, String.t()}
   def vnodes(target, module) do
-    with {:ok, all} <- call(target, :riak_core_vnode_manager, :all_vnodes, []),
-         selected = Data.select_vnodes(all, module, @max_vnodes),
-         pids = Enum.map(selected.taken, fn {_mod, _idx, pid} -> pid end),
-         items = List.duplicate([:message_queue_len, :memory, :reductions], length(pids)),
-         {:ok, infos} <- call(target, :lists, :zipwith, [&:erlang.process_info/2, pids, items]) do
-      {:ok,
-       %{
-         fetched: Enum.zip(selected.taken, infos),
-         total: selected.total,
-         modules: selected.modules,
-         module: selected.module
-       }}
+    with {:ok, statuses} <- call(target, :riak_core_vnode_manager, :all_vnodes_status, []) do
+      rows =
+        Enum.flat_map(statuses, fn {{mod, idx}, props} ->
+          # riak_core merges each vnode's properties with orddict:merge/3,
+          # so a vnode with one property has a lone tuple: {type, secondary}
+          props = List.wrap(props)
+          type = props[:type]
+          pid = props[:pid]
+
+          if type == :primary or is_pid(pid) do
+            [
+              %{
+                module: mod,
+                index: idx,
+                pid: pid,
+                type: type,
+                forwarding: props[:forwarding],
+                should_handoff: props[:should_handoff]
+              }
+            ]
+          else
+            []
+          end
+        end)
+
+      modules = rows |> Enum.map(& &1.module) |> Enum.uniq() |> Enum.sort()
+      module = if Enum.any?(modules, &(Atom.to_string(&1) == module)), do: module, else: ""
+
+      selected =
+        if module == "",
+          do: rows,
+          else: Enum.filter(rows, &(Atom.to_string(&1.module) == module))
+
+      taken =
+        selected
+        |> Enum.sort_by(&{&1.module, &1.index})
+        |> Enum.take(@max_vnodes)
+
+      pids = for %{pid: pid} <- taken, is_pid(pid), do: pid
+
+      with {:ok, infos} <- process_infos(target, pids) do
+        fetched = Enum.map(taken, &Map.put(&1, :info, Map.get(infos, &1.pid, [])))
+
+        {:ok, %{fetched: fetched, total: length(selected), modules: modules, module: module}}
+      end
+    end
+  end
+
+  defp process_infos(_target, []), do: {:ok, %{}}
+
+  defp process_infos(target, pids) do
+    items = List.duplicate([:message_queue_len, :memory, :reductions], length(pids))
+
+    with {:ok, infos} <-
+           call(target, :lists, :zipwith, [&:erlang.process_info/2, pids, items]) do
+      {:ok, Map.new(Enum.zip(pids, infos))}
     end
   end
 
@@ -388,8 +541,90 @@ defmodule RiakCorePlugin.Riak do
   @spec handoffs(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
   def handoffs(target) do
     with {:ok, active} <- call(target, :riak_core_handoff_manager, :status, []),
-         {:ok, pending} <- eval_ring(target, @pending_exprs) do
-      {:ok, %{active: active, pending: pending}}
+         {:ok, pending} <- eval_ring(target, @pending_exprs),
+         {:ok, settings} <- handoff_settings(target) do
+      {:ok, %{active: active, pending: pending, settings: settings}}
+    end
+  end
+
+  @doc """
+  The handoff controls' view: `%{concurrency, inbound, outbound, cluster}`.
+  `concurrency` is `riak_core_handoff_manager:get_concurrency/0`, and
+  `inbound`/`outbound` are whether handoffs are enabled in that direction
+  (`disable_inbound_handoff`/`disable_outbound_handoff` in riak_core's
+  environment). `cluster` is the history key for auditing a change.
+  """
+  @spec handoff_settings(GenServer.server()) :: {:ok, map()} | {:error, String.t()}
+  def handoff_settings(target) do
+    with {:ok, concurrency} <-
+           call(target, :riak_core_handoff_manager, :get_concurrency, []),
+         {:ok, disable_in} <-
+           call(target, :application, :get_env, [:riak_core, :disable_inbound_handoff, false]),
+         {:ok, disable_out} <-
+           call(target, :application, :get_env, [:riak_core, :disable_outbound_handoff, false]),
+         {:ok, cluster} <- cluster_name(target) do
+      {:ok,
+       %{
+         concurrency: concurrency,
+         inbound: not disable_in,
+         outbound: not disable_out,
+         cluster: Data.cluster_key(cluster)
+       }}
+    end
+  end
+
+  @doc """
+  Runs a handoff control on the attached node: `{:concurrency, n}`,
+  `{:direction, :enable | :disable, :inbound | :outbound | :both}`,
+  `{:kill_direction, direction}`, `{:pause, direction}` (disable the
+  direction, then kill its running handoffs), `:kill_all` or `:force` (force
+  all running vnodes to start handoff).
+
+  `riak_core_ring_manager:refresh_my_ring/0` is deliberately not offered:
+  it is the last step of a node leaving, and replaces the node's ring with a
+  fresh one of its own (persisted), so the node drops out of its cluster.
+  """
+  @spec handoff_action(GenServer.server(), term()) :: :ok | {:error, String.t()}
+  def handoff_action(target, {:concurrency, n}) when is_integer(n) and n >= 0,
+    do: handoff_call(target, :riak_core_handoff_manager, :set_concurrency, [n])
+
+  def handoff_action(target, {:direction, mode, direction})
+      when mode in [:enable, :disable] and direction in [:inbound, :outbound, :both],
+      do:
+        handoff_call(target, :riak_core_handoff_manager, :handoff_change_enabled_setting, [
+          mode,
+          direction
+        ])
+
+  def handoff_action(target, {:kill_direction, direction})
+      when direction in [:inbound, :outbound],
+      do:
+        handoff_call(target, :riak_core_handoff_manager, :kill_handoffs_in_direction, [direction])
+
+  def handoff_action(target, {:pause, direction}) when direction in [:inbound, :outbound] do
+    with :ok <- handoff_action(target, {:direction, :disable, direction}) do
+      case handoff_action(target, {:kill_direction, direction}) do
+        :ok ->
+          :ok
+
+        {:error, message} ->
+          {:error,
+           "#{direction} handoffs are disabled, but killing the running ones failed: #{message}"}
+      end
+    end
+  end
+
+  def handoff_action(target, :kill_all),
+    do: handoff_call(target, :riak_core_handoff_manager, :kill_handoffs, [])
+
+  def handoff_action(target, :force),
+    do: handoff_call(target, :riak_core_vnode_manager, :force_handoffs, [])
+
+  defp handoff_call(target, mod, fun, args) do
+    case call(target, mod, fun, args) do
+      {:ok, :ok} -> :ok
+      {:ok, other} -> {:error, "unexpected answer: #{inspect(other)}"}
+      error -> error
     end
   end
 

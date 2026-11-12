@@ -32,13 +32,14 @@ defmodule RiakCorePlugin.AdminLive do
 
     {:ok,
      socket
-     |> assign(confirm: nil, busy: false, note: nil, join_node: "")
+     |> assign(confirm: nil, busy: false, note: nil, note_at: nil, join_node: "")
      |> setup_loads(loads)}
   end
 
   @impl true
   def connection_changed(event, socket) do
-    {:noreply, socket |> assign(confirm: nil, busy: false, note: nil) |> reconnect(event)}
+    {:noreply,
+     socket |> assign(confirm: nil, busy: false, note: nil, note_at: nil) |> reconnect(event)}
   end
 
   @impl true
@@ -66,7 +67,7 @@ defmodule RiakCorePlugin.AdminLive do
 
     case join_node(text, socket.assigns.cluster) do
       {:ok, node} -> {:noreply, run(socket, {:join, node}, "Join of #{node} staged")}
-      :error -> {:noreply, assign(socket, note: {:error, "#{inspect(text)} is not a node name"})}
+      :error -> {:noreply, note(socket, :join, {:error, "#{inspect(text)} is not a node name"})}
     end
   end
 
@@ -102,7 +103,11 @@ defmodule RiakCorePlugin.AdminLive do
     else
       _ ->
         {:noreply,
-         assign(socket, note: {:error, "Pick a member and a joining node or one that could join"})}
+         note(
+           socket,
+           :replace,
+           {:error, "Pick a member and a joining node or one that could join"}
+         )}
     end
   end
 
@@ -112,7 +117,7 @@ defmodule RiakCorePlugin.AdminLive do
         {:noreply, run(socket, {:resize, n}, "Resize to #{n} partitions staged")}
 
       _ ->
-        {:noreply, assign(socket, note: {:error, "The ring size must be a positive number"})}
+        {:noreply, note(socket, :resize, {:error, "The ring size must be a positive number"})}
     end
   end
 
@@ -144,11 +149,23 @@ defmodule RiakCorePlugin.AdminLive do
         end
 
       :error ->
-        {:noreply, assign(socket, note: {:error, "#{inspect(text)} is not a member"})}
+        {:noreply, note(socket, :members, {:error, "#{inspect(text)} is not a member"})}
     end
   end
 
   defp ask(socket, action, text), do: assign(socket, confirm: {action, text}, note: nil)
+
+  # A note shows next to the form or buttons it is about (`at`), where the
+  # user is looking, not at the top of a long page.
+  defp note(socket, at, note), do: assign(socket, note: note, note_at: at)
+
+  defp note_at({:join, _}), do: :join
+  defp note_at({:join_and, _}), do: :replace
+  defp note_at({kind, _, _}) when kind in [:replace, :force_replace], do: :replace
+  defp note_at({:resize, _}), do: :resize
+  defp note_at(:abort_resize), do: :resize
+  defp note_at(action) when action in [:commit, :clear], do: :plan
+  defp note_at(_member_action), do: :members
 
   defp run(%{assigns: %{busy: true}} = socket, _action, _text), do: socket
 
@@ -160,7 +177,7 @@ defmodule RiakCorePlugin.AdminLive do
 
     if live?(socket) do
       socket
-      |> assign(busy: true, note: nil, confirm: nil)
+      |> assign(busy: true, note: nil, note_at: note_at(action), confirm: nil)
       |> start_async(:action, fn ->
         result = Riak.admin(target, node, action)
         History.record_admin(key, node, text, result, changes)
@@ -241,13 +258,7 @@ defmodule RiakCorePlugin.AdminLive do
     ~H"""
     <div class="rcp-page">
       <.header title="Admin" node={@node} refresh="refreshes every 5 s; plan every 10 s" />
-      <p
-        :if={@note}
-        class={["rcp-note-line", if(elem(@note, 0) == :ok, do: "rcp-ok", else: "rcp-error")]}
-        role="status"
-      >
-        {elem(@note, 1)}
-      </p>
+      <.note_line :if={@note_at not in [:members, :join, :replace, :resize, :plan]} note={@note} />
 
       <.result :let={cluster} node={@node} result={@cluster}>
         <div class="rcp-cards">
@@ -259,6 +270,7 @@ defmodule RiakCorePlugin.AdminLive do
 
         <h3>Members</h3>
         <.confirm_box :if={@confirm && not plan_action?(@confirm)} confirm={@confirm} busy={@busy} />
+        <.note_line :if={@note_at == :members} note={@note} />
         <table class="rcp-table">
           <thead>
             <tr>
@@ -332,8 +344,11 @@ defmodule RiakCorePlugin.AdminLive do
           <datalist id="rcp-join-candidates">
             <option :for={node <- cluster.candidates} value={node} />
           </datalist>
-          <button type="submit" disabled={@busy}>Stage join</button>
+          <button type="submit" disabled={@busy}>{if @busy and @note_at == :join,
+            do: "Joining…",
+            else: "Stage join"}</button>
         </form>
+        <.note_line :if={@note_at == :join} note={@note} />
         <p class="rcp-muted">
           The node is asked to join {@node} with <code>riak_core:staged_join/1</code>. It must run
           riak_core with the same ring size, not be in a cluster of its own, and be reachable from {@node}. It shows as joining until the plan is committed.
@@ -365,6 +380,7 @@ defmodule RiakCorePlugin.AdminLive do
           </select>
           <button type="submit" disabled={@busy}>Stage</button>
         </form>
+        <.note_line :if={@note_at == :replace} note={@note} />
         <p :if={joining(cluster) != [] or cluster.candidates != []} class="rcp-muted">
           A node is replaced by a joining node. Picking one that isn't in the cluster yet stages
           its join first, then the replace; commit the plan to carry both out.
@@ -388,6 +404,7 @@ defmodule RiakCorePlugin.AdminLive do
             Stage abort
           </button>
         </form>
+        <.note_line :if={@note_at == :resize} note={@note} />
       </.result>
 
       <h3>Staged changes</h3>
@@ -442,6 +459,7 @@ defmodule RiakCorePlugin.AdminLive do
             </div>
         <% end %>
         <.confirm_box :if={@confirm && plan_action?(@confirm)} confirm={@confirm} busy={@busy} />
+        <.note_line :if={@note_at == :plan} note={@note} />
         <div class="rcp-form">
           <button
             type="button"
@@ -457,6 +475,20 @@ defmodule RiakCorePlugin.AdminLive do
         </div>
       </.result>
     </div>
+    """
+  end
+
+  attr :note, :any, required: true
+
+  defp note_line(assigns) do
+    ~H"""
+    <p
+      :if={@note}
+      class={["rcp-note-line", if(elem(@note, 0) == :ok, do: "rcp-ok", else: "rcp-error")]}
+      role="status"
+    >
+      {elem(@note, 1)}
+    </p>
     """
   end
 

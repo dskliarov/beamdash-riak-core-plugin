@@ -9,29 +9,61 @@ defmodule RiakCorePlugin.Test.Peer do
   @fakes %{
     riak_core_ring_manager: """
     -module(riak_core_ring_manager).
-    -export([get_my_ring/0]).
+    -export([get_my_ring/0, get_ring_id/0, is_stable_ring/0, refresh_my_ring/0]).
     get_my_ring() ->
         case persistent_term:get(rcp_ring, undefined) of
             undefined -> {error, no_ring};
             Ring -> {ok, Ring}
         end.
+    get_ring_id() -> persistent_term:get(rcp_ring_id, {0, 0}).
+    is_stable_ring() -> persistent_term:get(rcp_ring_stable, {true, 0}).
+    refresh_my_ring() ->
+        persistent_term:put(rcp_calls, persistent_term:get(rcp_calls, []) ++
+                              [{riak_core_ring_manager, refresh_my_ring}]),
+        ok.
     """,
     riak_core_status: """
     -module(riak_core_status).
-    -export([ringready/0]).
+    -export([ringready/0, ring_status/0, transfers/0]).
     ringready() ->
         timer:sleep(persistent_term:get(rcp_ready_sleep, 0)),
         persistent_term:get(rcp_ready, {ok, [node()]}).
+    ring_status() ->
+        persistent_term:get(rcp_ring_status,
+                            {node(), true, [], [], []}).
+    transfers() -> persistent_term:get(rcp_transfers, {[], []}).
     """,
     riak_core_vnode_manager: """
     -module(riak_core_vnode_manager).
-    -export([all_vnodes/0]).
+    -export([all_vnodes/0, all_vnodes_status/0, force_handoffs/0]).
     all_vnodes() -> persistent_term:get(rcp_vnodes, []).
+    all_vnodes_status() ->
+        case persistent_term:get(rcp_vnode_status, undefined) of
+            undefined ->
+                [{{M, I}, [{type, primary}, {pid, P}]}
+                 || {M, I, P} <- persistent_term:get(rcp_vnodes, [])];
+            Statuses -> Statuses
+        end.
+    force_handoffs() ->
+        persistent_term:put(rcp_calls, persistent_term:get(rcp_calls, []) ++
+                              [{riak_core_vnode_manager, force_handoffs}]),
+        ok.
     """,
     riak_core_handoff_manager: """
     -module(riak_core_handoff_manager).
-    -export([status/0]).
+    -export([status/0, get_concurrency/0, set_concurrency/1,
+             handoff_change_enabled_setting/2, kill_handoffs/0,
+             kill_handoffs_in_direction/1]).
     status() -> persistent_term:get(rcp_handoffs, []).
+    get_concurrency() -> persistent_term:get(rcp_handoff_concurrency, 2).
+    set_concurrency(N) -> rec({set_concurrency, [N]}).
+    handoff_change_enabled_setting(M, D) -> rec({handoff_change_enabled_setting, [M, D]}).
+    kill_handoffs() -> rec({kill_handoffs, []}).
+    kill_handoffs_in_direction(D) -> rec({kill_handoffs_in_direction, [D]}).
+    rec(Call) ->
+        persistent_term:put(rcp_calls, persistent_term:get(rcp_calls, []) ++
+                              [{riak_core_handoff_manager, Call}]),
+        ok.
     """,
     # The admin calls: each is recorded (calls/1) and answers with the next
     # of rcp_replies, then rcp_reply (ok by default); plan/0 answers with

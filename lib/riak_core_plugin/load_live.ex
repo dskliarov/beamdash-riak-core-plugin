@@ -102,7 +102,7 @@ defmodule RiakCorePlugin.LoadLive do
                   {Format.pid(p.pid, @syntax)}
                 </.link>
               </td>
-              <td class="rcp-mono">{p.name}</td>
+              <td class="rcp-mono"><.module_link module={p.module} text={p.name} /></td>
               <td class="rcp-num">{p.reductions_per_s}</td>
               <td class="rcp-num">{p.mailbox}</td>
             </tr>

@@ -44,7 +44,7 @@ defmodule RiakCorePlugin.MembersLive do
                 <th>Node</th><th>Status</th><th>Up</th>
                 <th class="rcp-num">Partitions</th><th>Moving</th>
                 <th class="rcp-num">Vnodes</th><th class="rcp-num">Not owned</th>
-                <th class="rcp-num">Handoffs</th><th>Ring</th><th>Services</th>
+                <th class="rcp-num">Handoffs</th><th>System</th><th>Ring</th><th>Services</th>
                 <th>Versions</th><th class="rcp-num">Uptime</th><th class="rcp-num">Memory</th>
               </tr>
             </thead>
@@ -115,13 +115,13 @@ defmodule RiakCorePlugin.MembersLive do
   # the columns only the member itself knows
   defp node_cells(%{info: nil} = assigns) do
     ~H"""
-    <td colspan="8" class="rcp-muted">— (down)</td>
+    <td colspan="9" class="rcp-muted">— (down)</td>
     """
   end
 
   defp node_cells(%{info: {:error, _}} = assigns) do
     ~H"""
-    <td colspan="8" class="rcp-error">{elem(@info, 1)}</td>
+    <td colspan="9" class="rcp-error">{elem(@info, 1)}</td>
     """
   end
 
@@ -130,6 +130,7 @@ defmodule RiakCorePlugin.MembersLive do
     <td class="rcp-num">{@info.vnodes}</td>
     <td class={["rcp-num", @info.not_owned > 0 && "rcp-pending"]}>{@info.not_owned}</td>
     <td class="rcp-num">{@info.handoffs}</td>
+    <td class="rcp-nowrap">{system(@info)}</td>
     <td class={if @ring_agrees == false, do: "rcp-bad", else: "rcp-ok"}>
       {if @ring_agrees == false, do: "differs", else: "same"}
     </td>
@@ -140,6 +141,13 @@ defmodule RiakCorePlugin.MembersLive do
     <td class="rcp-num">{Data.uptime(@info.uptime_ms)}</td>
     <td class="rcp-num">{Format.bytes(@info.memory)}</td>
     """
+  end
+
+  defp system(info) do
+    case {info[:run_queue], info[:ports], info[:ets]} do
+      {nil, _, _} -> "—"
+      {queue, ports, ets} -> "runq #{queue} · #{ports || "?"} ports · #{ets || "?"} ETS"
+    end
   end
 
   defp services(nil), do: "?"

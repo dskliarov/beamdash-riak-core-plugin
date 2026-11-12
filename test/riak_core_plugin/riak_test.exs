@@ -56,6 +56,14 @@ defmodule RiakCorePlugin.RiakTest do
     assert ring.pending == []
     assert ring.members == [{node, :valid}]
     assert node in ring.up
+    assert {^node, _} = ring.cluster_name
+    assert is_list(ring.ring_version)
+    assert ring.ring_id == {0, 0}
+    assert ring.stable == {true, 0}
+    refute ring.tainted
+    refute ring.lastgasp
+    refute ring.resizing
+    assert ring.future_size == 8
     # no owner is down: no fallbacks, and no rpc for them
     assert ring.fallbacks == %{}
     # riak_core's target_n_val (unset here: riak_core's default, 4) is the N
@@ -95,6 +103,10 @@ defmodule RiakCorePlugin.RiakTest do
     assert info.services == nil
     assert info.otp == System.otp_release()
     assert is_integer(info.uptime_ms) and is_integer(info.memory)
+    assert is_integer(info.run_queue)
+    assert is_integer(info.ports) and is_integer(info.ets)
+    assert is_integer(info.context_switches) and is_integer(info.gc_count)
+    assert is_integer(info.connected)
 
     [row] =
       Data.member_details(%{
@@ -108,13 +120,66 @@ defmodule RiakCorePlugin.RiakTest do
     assert row.ring_agrees and row.share == 100.0
   end
 
+  describe "coverage/1 and health/1" do
+    setup do
+      {peer, node} = Peer.start()
+      on_exit(fn -> Peer.stop(peer) end)
+      Peer.put(node, :rcp_ring, Peer.fresh_ring(node, 8))
+      %{node: node}
+    end
+
+    test "coverage counts only up preflist nodes", %{node: node} do
+      assert {:ok, coverage} = Riak.coverage(target(node))
+      assert coverage.partitions == 8
+      assert coverage.n_val == 4
+      # only the ring's owner is up for these preflists
+      assert coverage.under_count == 8
+      assert length(coverage.under) == 8
+      assert coverage.replica_load == [{node, 8}]
+    end
+
+    test "health combines readiness, transfers and coverage", %{node: node} do
+      assert {:ok, health} = Riak.health(target(node))
+      assert health.claimant == node
+      assert health.ring_ready == true
+      assert health.down == []
+      assert health.pending_transfers == 0
+      assert health.coverage.under_count == 8
+      assert Enum.any?(health.alerts, &(&1.text =~ "fewer than 4 up replicas"))
+    end
+  end
+
   test "up_nodes/1 is the target plus the nodes it sees", %{node: node} do
     assert {:ok, up} = Riak.up_nodes(target(node))
     assert node in up and node() in up
   end
 
-  test "handoffs/1: status/0 and the pending changes", %{node: node} do
-    assert Riak.handoffs(target(node)) == {:ok, %{active: [], pending: []}}
+  test "handoffs/1: status, pending changes and handoff settings", %{node: node} do
+    assert {:ok, %{active: [], pending: [], settings: settings}} = Riak.handoffs(target(node))
+    assert settings.concurrency == 2
+    assert settings.inbound and settings.outbound
+    assert is_binary(settings.cluster)
+  end
+
+  test "handoff_action/2 and handoff_settings/1 call the managers" do
+    {peer, node} = Peer.start()
+    on_exit(fn -> Peer.stop(peer) end)
+    target = target(node)
+
+    assert :ok = Riak.handoff_action(target, {:concurrency, 3})
+    assert :ok = Riak.handoff_action(target, {:direction, :disable, :inbound})
+    assert :ok = Riak.handoff_action(target, {:kill_direction, :outbound})
+    assert :ok = Riak.handoff_action(target, :kill_all)
+    assert :ok = Riak.handoff_action(target, :force)
+
+    calls = Peer.calls(node)
+    assert {:riak_core_handoff_manager, {:set_concurrency, [3]}} in calls
+
+    assert {:riak_core_handoff_manager, {:handoff_change_enabled_setting, [:disable, :inbound]}} in calls
+
+    assert {:riak_core_handoff_manager, {:kill_handoffs_in_direction, [:outbound]}} in calls
+    assert {:riak_core_handoff_manager, {:kill_handoffs, []}} in calls
+    assert {:riak_core_vnode_manager, :force_handoffs} in calls
   end
 
   test "ring_ready/2: the result as text, a timeout as readable text", %{node: node} do
@@ -171,15 +236,40 @@ defmodule RiakCorePlugin.RiakTest do
       assert all.total == 303
       assert length(all.fetched) == Riak.max_vnodes()
       # the first 256 by module and index: all a_vnode
-      assert Enum.all?(all.fetched, &match?({{:a_vnode, _, _}, _}, &1))
+      assert Enum.all?(all.fetched, &match?(%{module: :a_vnode, type: :primary}, &1))
 
       assert {:ok, b} = Riak.vnodes(target, "b_vnode")
       assert b.module == "b_vnode"
       assert b.total == 3
-      assert [{{:b_vnode, 1, _}, info} | _] = b.fetched
+      assert [%{module: :b_vnode, type: :primary, info: info} | _] = b.fetched
       assert length(b.fetched) == 3
       assert info[:message_queue_len] == 0
       assert info[:memory] > 0
+    end
+
+    test "primary vnodes without a pid and running secondaries are shown",
+         %{vnode_node: node} do
+      p1 = Peer.spawn_idle(node)
+      p2 = Peer.spawn_idle(node)
+
+      Peer.put(node, :rcp_vnode_status, [
+        {{:a_vnode, 0}, {:type, :primary}},
+        {{:a_vnode, 1}, [type: :primary, pid: p1]},
+        {{:a_vnode, 2}, {:type, :secondary}},
+        {{:a_vnode, 3}, [type: :secondary, pid: p2]},
+        {{:a_vnode, 4}, [type: :primary, pid: p1, forwarding: :b@h]},
+        {{:a_vnode, 5}, [type: :primary, pid: p1, should_handoff: :c@h]}
+      ])
+
+      assert {:ok, %{total: 5, fetched: rows}} = Riak.vnodes(target(node), "a_vnode")
+
+      assert [
+               %{index: 0, mode: :not_started, target: nil},
+               %{index: 1, mode: :active, target: nil},
+               %{index: 3, mode: :active, target: nil},
+               %{index: 4, mode: :forward, target: :b@h},
+               %{index: 5, mode: :handoff, target: :c@h}
+             ] = Data.vnode_rows(rows, {:index, :asc})
     end
 
     test "a filter that matches no module is dropped", %{vnode_node: node} do

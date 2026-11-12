@@ -63,8 +63,22 @@ defmodule RiakCorePlugin.DataTest do
                view.memory
 
       assert [busy, exited] = view.processes
-      assert busy == %{pid: pid1(), name: ":gen_server.loop/7", mailbox: 3, reductions_per_s: 500}
-      assert exited == %{pid: pid2(), name: "exited", mailbox: nil, reductions_per_s: 10}
+
+      assert busy == %{
+               pid: pid1(),
+               name: ":gen_server.loop/7",
+               module: :gen_server,
+               mailbox: 3,
+               reductions_per_s: 500
+             }
+
+      assert exited == %{
+               pid: pid2(),
+               name: "exited",
+               module: nil,
+               mailbox: nil,
+               reductions_per_s: 10
+             }
     end
   end
 
@@ -144,6 +158,9 @@ defmodule RiakCorePlugin.DataTest do
                module: :a_vnode,
                index: 1,
                pid: pid2(),
+               type: nil,
+               mode: nil,
+               target: nil,
                mailbox: 9,
                memory: 500,
                reductions: 70
@@ -155,6 +172,70 @@ defmodule RiakCorePlugin.DataTest do
                [pid2(), pid1(), pid3()]
 
       assert Enum.map(Data.vnode_rows(fetched, {:module, :desc}), & &1.index) == [2, 1, 0]
+    end
+
+    test "vnode rows carry type and live state" do
+      fetched = [
+        %{
+          module: :a_vnode,
+          index: 0,
+          pid: pid1(),
+          type: :primary,
+          forwarding: nil,
+          should_handoff: nil,
+          info: [message_queue_len: 1, memory: 10, reductions: 2]
+        },
+        %{
+          module: :a_vnode,
+          index: 1,
+          pid: nil,
+          type: :primary,
+          forwarding: nil,
+          should_handoff: nil,
+          info: []
+        },
+        %{
+          module: :a_vnode,
+          index: 2,
+          pid: pid2(),
+          type: :secondary,
+          forwarding: :b@h,
+          should_handoff: nil,
+          info: []
+        },
+        %{
+          module: :a_vnode,
+          index: 3,
+          pid: pid3(),
+          type: :primary,
+          forwarding: nil,
+          should_handoff: :c@h,
+          info: []
+        }
+      ]
+
+      assert [
+               %{mode: :active, target: nil},
+               %{mode: :not_started, target: nil},
+               %{mode: :forward, target: :b@h},
+               %{mode: :handoff, target: :c@h}
+             ] = Data.vnode_rows(fetched, {:index, :asc})
+    end
+
+    test "a stopped vnode with a stale forwarding target shows as not started" do
+      fetched = [
+        %{
+          module: :a_vnode,
+          index: 0,
+          pid: nil,
+          type: :primary,
+          forwarding: :b@h,
+          should_handoff: nil,
+          info: []
+        }
+      ]
+
+      assert [%{mode: :not_started, target: nil}] = Data.vnode_rows(fetched, {:index, :asc})
     end
   end
 
@@ -198,7 +279,11 @@ defmodule RiakCorePlugin.DataTest do
                start: "2025-10-25T13:46:40Z",
                sender: pid1(),
                size: {1000, :objects},
-               progress: 0.25
+               progress: 0.25,
+               objs_total: 10,
+               objs_per_s: 5,
+               bytes_per_s: 100,
+               eta_ms: 150_000
              }
     end
 
@@ -239,6 +324,45 @@ defmodule RiakCorePlugin.DataTest do
                {:error, "a and b see different owners"}
 
       assert Data.ring_ready({:error, :nope}) == {:error, ":nope"}
+    end
+  end
+
+  describe "health/3" do
+    test "shapes readiness, queue and coverage, and raises the warnings" do
+      health =
+        Data.health(
+          {:a@h, false, [:b@h], [:c@h], [{{:a@h, :b@h}, [{0, [:m], [], :waiting}]}]},
+          {:b@h, [{:waiting_to_handoff, :b@h, 2}, {:stopped, :c@h, 1}]},
+          %{
+            partitions: 4,
+            n_val: 4,
+            under_count: 1,
+            under: [{2, [:a@h]}],
+            replica_load: [{:a@h, 3}]
+          }
+        )
+
+      assert health.ring_ready == false
+      assert health.down == [:b@h]
+      assert health.marked_down == [:c@h]
+      assert health.pending_transfers == 1
+      assert health.waiting == [%{node: :b@h, count: 2}]
+      assert health.stopped == [%{node: :c@h, count: 1}]
+
+      assert Enum.map(health.alerts, & &1.level) == [:bad, :bad, :warn, :bad, :warn, :bad]
+      assert Enum.any?(health.alerts, &(&1.text =~ "not ready"))
+      assert Enum.any?(health.alerts, &(&1.text =~ "fewer than 4 up replicas"))
+    end
+
+    test "reports no warnings when the ring is healthy" do
+      health =
+        Data.health(
+          {:a@h, true, [], [], []},
+          {[], []},
+          %{partitions: 4, n_val: 4, under_count: 0, under: [], replica_load: [{:a@h, 4}]}
+        )
+
+      assert [%{level: :ok, text: "No immediate ring-health warnings."}] = health.alerts
     end
   end
 
