@@ -151,66 +151,65 @@ defmodule RiakCorePlugin.PageCallbacksTest do
   test "handoffs: pause asks, then disables the direction and kills its handoffs, in that order",
        %{target: target, node: node} do
     socket = HandoffsLive |> mount(target) |> await(:handoffs)
+    mark = mark(node)
 
     socket = event(socket, "pause_direction", %{"direction" => "inbound"})
     assert render(socket) =~ "Pause inbound handoffs? Their active transfers are killed."
-    assert calls_to(node, :kill_handoffs_in_direction) == []
+    assert calls_since(node, mark, :kill_handoffs_in_direction) == []
 
     socket = socket |> event("confirm", %{}) |> await(:action)
     assert render(socket) =~ "Paused inbound handoffs"
 
-    calls = Peer.calls(node)
-    disable = Enum.find_index(calls, &match?({_, {:handoff_change_enabled_setting, _}}, &1))
-    kill = Enum.find_index(calls, &match?({_, {:kill_handoffs_in_direction, _}}, &1))
+    calls = since(node, mark) |> Enum.map(&elem(&1, 1))
+    disable = Enum.find_index(calls, &match?({:handoff_change_enabled_setting, _}, &1))
+    kill = Enum.find_index(calls, &match?({:kill_handoffs_in_direction, _}, &1))
 
-    assert {:handoff_change_enabled_setting, [:disable, :inbound]} in Enum.map(
-             calls,
-             &elem(&1, 1)
-           )
-
+    assert Enum.at(calls, disable) == {:handoff_change_enabled_setting, [:disable, :inbound]}
+    assert Enum.at(calls, kill) == {:kill_handoffs_in_direction, [:inbound]}
     assert disable < kill
-    assert {:riak_core_handoff_manager, {:kill_handoffs_in_direction, [:inbound]}} in calls
   end
 
   test "handoffs: enable runs at once, with no question", %{target: target, node: node} do
     socket = HandoffsLive |> mount(target) |> await(:handoffs)
+    mark = mark(node)
 
     socket = event(socket, "enable_direction", %{"direction" => "outbound"})
     refute render(socket) =~ "Confirm"
     socket = await(socket, :action)
     assert render(socket) =~ "Enabled outbound handoffs"
 
-    assert {:riak_core_handoff_manager, {:handoff_change_enabled_setting, [:enable, :outbound]}} in Peer.calls(
-             node
-           )
+    assert {:handoff_change_enabled_setting, [:enable, :outbound]} in (since(node, mark)
+                                                                       |> Enum.map(&elem(&1, 1)))
   end
 
   test "handoffs: kill all asks first, and kills only once confirmed",
        %{target: target, node: node} do
     socket = HandoffsLive |> mount(target) |> await(:handoffs)
+    mark = mark(node)
 
     socket = event(socket, "kill_all", %{})
     assert render(socket) =~ "Kill all active handoffs?"
-    assert calls_to(node, :kill_handoffs) == []
+    assert calls_since(node, mark, :kill_handoffs) == []
 
     socket = socket |> event("confirm", %{}) |> await(:action)
     assert render(socket) =~ "Killed all active handoffs"
-    assert calls_to(node, :kill_handoffs) == [[]]
+    assert calls_since(node, mark, :kill_handoffs) == [[]]
   end
 
   test "handoffs: a concurrency of zero asks first; a positive one runs at once",
        %{target: target, node: node} do
     socket = HandoffsLive |> mount(target) |> await(:handoffs)
+    mark = mark(node)
 
     socket = event(socket, "concurrency", %{"count" => "0"})
     assert render(socket) =~ "Set concurrency to 0? This stops all handoffs."
-    assert calls_to(node, :set_concurrency) == []
+    assert calls_since(node, mark, :set_concurrency) == []
     socket = event(socket, "cancel", %{})
 
     socket = event(socket, "concurrency", %{"count" => "3"})
     socket = await(socket, :action)
     assert render(socket) =~ "Handoff concurrency set to 3"
-    assert calls_to(node, :set_concurrency) == [[3]]
+    assert calls_since(node, mark, :set_concurrency) == [[3]]
   end
 
   test "handoffs: a concurrency that isn't a whole number is refused", %{
@@ -218,14 +217,20 @@ defmodule RiakCorePlugin.PageCallbacksTest do
     node: node
   } do
     socket = HandoffsLive |> mount(target) |> await(:handoffs)
+    mark = mark(node)
 
     socket = event(socket, "concurrency", %{"count" => "-1"})
     assert render(socket) =~ "The concurrency limit must be zero or more"
-    assert calls_to(node, :set_concurrency) == []
+    assert calls_since(node, mark, :set_concurrency) == []
   end
 
-  defp calls_to(node, fun) do
-    for {_, {^fun, args}} <- Peer.calls(node), do: args
+  # The peer's recorded calls are shared by the module's tests, so each test
+  # looks only at the calls made after its own mark.
+  defp mark(node), do: length(Peer.calls(node))
+  defp since(node, mark), do: Enum.drop(Peer.calls(node), mark)
+
+  defp calls_since(node, mark, fun) do
+    for {_, {^fun, args}} <- since(node, mark), do: args
   end
 
   test "reconnecting keeps one timer per load", %{target: target, node: node} do
