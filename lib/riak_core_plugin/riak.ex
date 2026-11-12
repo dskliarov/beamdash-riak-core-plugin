@@ -280,8 +280,7 @@ defmodule RiakCorePlugin.Riak do
   def ring(target, opts \\ []) do
     with {:ok,
           {size, claimant, owners, pending, members, n_val, cluster_name, ring_version, ring_id,
-           stable, tainted_meta, lastgasp, resizing, future_size,
-           resize_complete}} <-
+           stable, tainted_meta, lastgasp, resizing, future_size, resize_complete}} <-
            eval_ring(target, @ring_exprs),
          {:ok, up} <- up_nodes(target) do
       {fallbacks, fallback_error} =
@@ -577,8 +576,9 @@ defmodule RiakCorePlugin.Riak do
   @doc """
   Runs a handoff control on the attached node: `{:concurrency, n}`,
   `{:direction, :enable | :disable, :inbound | :outbound | :both}`,
-  `{:kill_direction, direction}`, `:kill_all` or `:force` (force all
-  running vnodes to start handoff).
+  `{:kill_direction, direction}`, `{:pause, direction}` (disable the
+  direction, then kill its running handoffs), `:kill_all` or `:force` (force
+  all running vnodes to start handoff).
 
   `riak_core_ring_manager:refresh_my_ring/0` is deliberately not offered:
   it is the last step of a node leaving, and replaces the node's ring with a
@@ -600,6 +600,11 @@ defmodule RiakCorePlugin.Riak do
       when direction in [:inbound, :outbound],
       do:
         handoff_call(target, :riak_core_handoff_manager, :kill_handoffs_in_direction, [direction])
+
+  def handoff_action(target, {:pause, direction}) when direction in [:inbound, :outbound] do
+    with :ok <- handoff_action(target, {:direction, :disable, direction}),
+         do: handoff_action(target, {:kill_direction, direction})
+  end
 
   def handoff_action(target, :kill_all),
     do: handoff_call(target, :riak_core_handoff_manager, :kill_handoffs, [])

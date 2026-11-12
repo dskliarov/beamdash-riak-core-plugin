@@ -63,7 +63,7 @@ defmodule RiakCorePlugin.HandoffsLive do
       {:noreply,
        ask(
          socket,
-         {:direction, :disable, direction},
+         {:pause, direction},
          "Pause #{direction} handoffs? Their active transfers are killed.",
          "Paused #{direction} handoffs"
        )}

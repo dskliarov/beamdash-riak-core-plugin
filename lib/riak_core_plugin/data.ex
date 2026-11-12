@@ -193,9 +193,9 @@ defmodule RiakCorePlugin.Data do
     }
   end
 
+  defp vnode_state(%{pid: nil}), do: {:not_started, nil}
   defp vnode_state(%{forwarding: node}) when not is_nil(node), do: {:forward, node}
   defp vnode_state(%{should_handoff: node}) when not is_nil(node), do: {:handoff, node}
-  defp vnode_state(%{pid: nil}), do: {:not_started, nil}
   defp vnode_state(_row), do: {:active, nil}
 
   @doc """

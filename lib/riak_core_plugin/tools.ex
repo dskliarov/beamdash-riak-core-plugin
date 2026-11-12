@@ -49,18 +49,37 @@ defmodule RiakCorePlugin.Tools do
     end
   end
 
+  @health_budget 4_000
+
   @doc """
   A bounded health summary: readiness, claimant, down members, pending
-  changes, handoff queue and replica coverage. `ringready/0` is given a
-  4 s caller timeout, so a slow member shows as an error instead of
-  outliving the tool.
+  changes, handoff queue and replica coverage. Its four calls run at once
+  under a #{@health_budget} ms budget; one that runs out of time shows as an
+  error, so the tool returns within the budget even when a member is slow.
   """
   def health(_args) do
-    with {:ok, ring} <- Riak.ring(Beamdash.Target, fallbacks: false),
-         {:ok, {_down, transfers}} <- Riak.transfers(Beamdash.Target),
-         {:ok, coverage} <- Riak.coverage(Beamdash.Target) do
+    [ring_result, transfers_result, coverage_result, ready_result] =
+      [
+        fn -> Riak.ring(Beamdash.Target, fallbacks: false) end,
+        fn -> Riak.transfers(Beamdash.Target) end,
+        fn -> Riak.coverage(Beamdash.Target) end,
+        fn -> Riak.ring_ready(Beamdash.Target, @health_budget) end
+      ]
+      |> Task.async_stream(& &1.(),
+        max_concurrency: 4,
+        timeout: @health_budget,
+        on_timeout: :kill_task
+      )
+      |> Enum.map(fn
+        {:ok, result} -> result
+        {:exit, _} -> {:error, "timed out after #{@health_budget} ms"}
+      end)
+
+    with {:ok, ring} <- ring_result,
+         {:ok, {_down, transfers}} <- transfers_result,
+         {:ok, coverage} <- coverage_result do
       ready =
-        case Riak.ring_ready(Beamdash.Target, 4_000) do
+        case ready_result do
           {:ok, {:ok, text}} -> %{ok: true, text: text}
           {:ok, {:error, text}} -> %{ok: false, text: text}
           {:error, message} -> %{ok: false, text: message}

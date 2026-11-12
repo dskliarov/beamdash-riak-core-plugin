@@ -84,7 +84,8 @@ defmodule RiakCorePlugin.RingLive do
     <div class="rcp-page">
       <.header title="Ring" node={@node} refresh="refreshes every 5 s; ring readiness every 30 s" />
       <.result :let={ring} node={@node} result={@ring}>
-        <% down = MapSet.new(Data.down_owners(ring)) %>
+        <% down_nodes = Data.down_owners(ring) %>
+        <% down = MapSet.new(down_nodes) %>
         <div class="rcp-cards">
           <.card label="Ring size" value={"#{ring.size} partitions"} />
           <.card
@@ -113,8 +114,8 @@ defmodule RiakCorePlugin.RingLive do
         </p>
         <.claimant_note note={Data.claimant_note(ring.claimant, ring.members, ring[:up])} />
 
-        <div :if={Data.down_owners(ring) != []} class="rcp-down-note" role="status">
-          <p :for={node <- Data.down_owners(ring)}>
+        <div :if={down_nodes != []} class="rcp-down-note" role="status">
+          <p :for={node <- down_nodes}>
             <strong>{node}</strong>
             is down. It still owns its {Enum.count(ring.owners, &(elem(&1, 1) == node))} partitions: riak_core doesn't move
             ownership when a node goes down. Fallback vnodes on the other nodes serve them until it is back.

@@ -117,8 +117,9 @@ beamdash's Modules tab, when it is loaded on the attached node.
   start time and sender pid (a link to the process). Also the pending ownership changes
   (`riak_core_ring:pending_changes/1`). It shows "No handoffs" when both are
   empty. It shows the handoff concurrency limit and whether inbound/outbound
-  handoffs are enabled, and can set the limit, pause/resume a direction,
-  kill all handoffs or force handoffs. Pausing, killing, forcing and
+  handoffs are enabled, and can set the limit, pause/resume a direction
+  (pausing also kills that direction's running handoffs), kill all handoffs
+  or force handoffs. Pausing, killing, forcing and
   setting the limit to zero ask for confirmation; each action is kept in
   the history as what was done. There is no "refresh ring":
   `riak_core_ring_manager:refresh_my_ring/0` is the last step of a node
@@ -213,7 +214,7 @@ the same data as the Ring, Members, Handoffs and Load pages, as JSON, except
 that `riak_core.ring` leaves out the fallback nodes (the Ring page's Fallback
 column): finding them takes one more rpc. `riak_core.load` takes a 1-second
 sample when it is called, as the Load page does, so its rates are for that
-second. `riak_core.health` returns a bounded readiness/coverage summary;
+second. `riak_core.health` returns a readiness/coverage summary within 4 s;
 `riak_core.vnodes` returns expected/running vnode type and state
 (optionally for one `module`); `riak_core.handoff_stats` adds handoff
 throughput, ETA and the waiting/stopped queue; `riak_core.node` returns one

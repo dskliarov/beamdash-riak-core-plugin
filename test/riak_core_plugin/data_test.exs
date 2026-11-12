@@ -221,6 +221,22 @@ defmodule RiakCorePlugin.DataTest do
                %{mode: :handoff, target: :c@h}
              ] = Data.vnode_rows(fetched, {:index, :asc})
     end
+
+    test "a stopped vnode with a stale forwarding target shows as not started" do
+      fetched = [
+        %{
+          module: :a_vnode,
+          index: 0,
+          pid: nil,
+          type: :primary,
+          forwarding: :b@h,
+          should_handoff: nil,
+          info: []
+        }
+      ]
+
+      assert [%{mode: :not_started, target: nil}] = Data.vnode_rows(fetched, {:index, :asc})
+    end
   end
 
   describe "handoff_rows/1" do
