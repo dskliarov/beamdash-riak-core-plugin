@@ -4,8 +4,9 @@ defmodule RiakCorePlugin.Collect do
   riak_core runs on the attached node, with the state its previous call
   returned (`nil` at first, and after the attached node changes). Each
   stores only what changed since its previous call, so the first call just
-  takes note of the cluster as it is. See `RiakCorePlugin.History` for what
-  each kind holds.
+  takes note of the cluster as it is. A call that returns `{:error, reason}`
+  stores nothing and returns no state, so the caller keeps the state it
+  passed in. See `RiakCorePlugin.History` for what each kind holds.
   """
 
   alias RiakCorePlugin.{Data, History, Riak}
