@@ -68,6 +68,21 @@ defmodule RiakCorePlugin.HistoryTest do
     assert {:ok, [_]} = History.query("handoffs", key)
   end
 
+  test "handoffs: a failed call stores nothing and the state it was given still works",
+       %{node: node, key: key} do
+    Peer.put(node, :rcp_handoffs, [handoff(node, 0)])
+    assert {:ok, state} = Collect.handoffs(nil)
+
+    Beamdash.Target.disconnect()
+    assert {:error, _} = Collect.handoffs(state)
+    assert {:ok, []} = History.query("handoffs", key)
+
+    {:ok, _} = Beamdash.Target.connect(Atom.to_string(node), Node.get_cookie())
+    Peer.put(node, :rcp_handoffs, [])
+    assert {:ok, _} = Collect.handoffs(state)
+    assert {:ok, [_]} = History.query("handoffs", key)
+  end
+
   test "handoffs: a transfer the ring marks done is stored, though never seen running",
        %{node: node, ring: ring, key: key} do
     pending = fn mods -> [{0, node, :new@h, mods, :awaiting}] end
